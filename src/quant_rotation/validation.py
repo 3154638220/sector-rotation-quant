@@ -10,6 +10,7 @@ from .metrics import annual_returns, summarize_performance
 from .models import BacktestResult, BreadthData, PriceData, StrategyConfig
 from .sweep import (
     DEFAULT_FACTOR_SET_NAMES,
+    DEFAULT_MARKET_SCORE_THRESHOLDS,
     DEFAULT_RISK_CONTROL_VALUES,
     DEFAULT_RISK_OFF_EXPOSURES,
     DEFAULT_TOP_K_VALUES,
@@ -285,6 +286,7 @@ def run_train_test_validation(
     risk_off_exposures: tuple[float, ...] = DEFAULT_RISK_OFF_EXPOSURES,
     risk_control_values: tuple[bool, ...] = DEFAULT_RISK_CONTROL_VALUES,
     market_score_control_values: tuple[bool, ...] | None = None,
+    market_score_threshold_values: tuple[float, ...] = DEFAULT_MARKET_SCORE_THRESHOLDS,
     train_end: date | None = None,
     test_start: date | None = None,
     split_ratio: float = 0.70,
@@ -311,6 +313,7 @@ def run_train_test_validation(
         risk_off_exposures=risk_off_exposures,
         risk_control_values=risk_control_values,
         market_score_control_values=market_score_control_values,
+        market_score_threshold_values=market_score_threshold_values,
     )
     return _validation_runs_for_split(sweep_runs, split)
 
@@ -363,6 +366,7 @@ def run_walk_forward_validation(
     risk_off_exposures: tuple[float, ...] = DEFAULT_RISK_OFF_EXPOSURES,
     risk_control_values: tuple[bool, ...] = DEFAULT_RISK_CONTROL_VALUES,
     market_score_control_values: tuple[bool, ...] | None = None,
+    market_score_threshold_values: tuple[float, ...] = DEFAULT_MARKET_SCORE_THRESHOLDS,
     train_window: int = 504,
     test_window: int = 126,
     step: int | None = None,
@@ -391,6 +395,7 @@ def run_walk_forward_validation(
         risk_off_exposures=risk_off_exposures,
         risk_control_values=risk_control_values,
         market_score_control_values=market_score_control_values,
+        market_score_threshold_values=market_score_threshold_values,
     )
 
     return [
@@ -557,6 +562,7 @@ def _write_validation_summary(
                 "risk_off_exposure",
                 "risk_control",
                 "market_score_control",
+                "market_score_threshold",
                 "train_start",
                 "train_end",
                 "test_start",
@@ -582,6 +588,7 @@ def _write_validation_summary(
                     f"{spec.risk_off_exposure:.6f}",
                     str(spec.risk_control).lower(),
                     str(spec.market_score_control).lower(),
+                    f"{spec.market_score_threshold:.6f}",
                     split.train_start.isoformat(),
                     split.train_end.isoformat(),
                     split.test_start.isoformat(),
@@ -688,6 +695,7 @@ def _write_walk_forward_candidates(
                 "risk_off_exposure",
                 "risk_control",
                 "market_score_control",
+                "market_score_threshold",
                 "train_start",
                 "train_end",
                 "test_start",
@@ -723,6 +731,7 @@ def _write_walk_forward_candidates(
                         f"{spec.risk_off_exposure:.6f}",
                         str(spec.risk_control).lower(),
                         str(spec.market_score_control).lower(),
+                        f"{spec.market_score_threshold:.6f}",
                         split.train_start.isoformat(),
                         split.train_end.isoformat(),
                         split.test_start.isoformat(),
@@ -766,6 +775,7 @@ def _write_walk_forward_folds(
                 "risk_off_exposure",
                 "risk_control",
                 "market_score_control",
+                "market_score_threshold",
                 "train_start",
                 "train_end",
                 "test_start",
@@ -796,6 +806,7 @@ def _write_walk_forward_folds(
                     f"{spec.risk_off_exposure:.6f}",
                     str(spec.risk_control).lower(),
                     str(spec.market_score_control).lower(),
+                    f"{spec.market_score_threshold:.6f}",
                     split.train_start.isoformat(),
                     split.train_end.isoformat(),
                     split.test_start.isoformat(),
@@ -1002,6 +1013,7 @@ def _write_fixed_candidate_summary(
             "risk_off_exposure",
             "risk_control",
             "market_score_control",
+            "market_score_threshold",
             "folds",
             "first_test_start",
             "last_test_end",
@@ -1029,6 +1041,7 @@ def _write_fixed_candidate_summary(
                 f"{spec.risk_off_exposure:.6f}",
                 str(spec.risk_control).lower(),
                 str(spec.market_score_control).lower(),
+                f"{spec.market_score_threshold:.6f}",
                 len(folds),
                 folds[0].split.test_start.isoformat(),
                 folds[-1].split.test_end.isoformat(),

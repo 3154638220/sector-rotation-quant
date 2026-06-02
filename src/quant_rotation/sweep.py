@@ -19,6 +19,7 @@ DEFAULT_TOP_K_VALUES = (3, 5, 8)
 DEFAULT_RISK_OFF_EXPOSURES = (0.0, 0.2, 0.3, 0.5)
 DEFAULT_RISK_CONTROL_VALUES = (False, True)
 DEFAULT_MARKET_SCORE_CONTROL_VALUES = (False, True)
+DEFAULT_MARKET_SCORE_THRESHOLDS = (0.0,)
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class ParameterSweepSpec:
     risk_off_exposure: float
     risk_control: bool
     market_score_control: bool
+    market_score_threshold: float
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,11 @@ def _format_exposure(value: float) -> str:
 
 def _format_bool(value: bool) -> str:
     return "1" if value else "0"
+
+
+def _format_threshold(value: float) -> str:
+    text = f"{value:g}".replace("-", "neg").replace(".", "p")
+    return text if text != "neg0" else "0"
 
 
 def _candidate_factor_sets(
@@ -184,6 +191,7 @@ def build_parameter_sweep_specs(
     risk_off_exposures: tuple[float, ...] = DEFAULT_RISK_OFF_EXPOSURES,
     risk_control_values: tuple[bool, ...] = DEFAULT_RISK_CONTROL_VALUES,
     market_score_control_values: tuple[bool, ...] = DEFAULT_MARKET_SCORE_CONTROL_VALUES,
+    market_score_threshold_values: tuple[float, ...] = DEFAULT_MARKET_SCORE_THRESHOLDS,
 ) -> list[ParameterSweepSpec]:
     if not factor_set_names:
         raise ValueError("Parameter sweep requires at least one factor_set value")
@@ -196,6 +204,10 @@ def build_parameter_sweep_specs(
     if not market_score_control_values:
         raise ValueError(
             "Parameter sweep requires at least one market_score_control value"
+        )
+    if not market_score_threshold_values:
+        raise ValueError(
+            "Parameter sweep requires at least one market_score_threshold value"
         )
     for top_k in top_k_values:
         if top_k <= 0:
@@ -219,6 +231,10 @@ def build_parameter_sweep_specs(
     include_control_suffix = (
         len(risk_control_values) > 1 or len(market_score_control_values) > 1
     )
+    include_threshold_suffix = (
+        len(market_score_threshold_values) > 1
+        or market_score_threshold_values[0] != config.market_score_threshold
+    )
 
     specs: list[ParameterSweepSpec] = []
     for factor_set, description, fields, weights in candidate_sets:
@@ -228,28 +244,39 @@ def build_parameter_sweep_specs(
             for exposure in risk_off_exposures:
                 for risk_control in risk_control_values:
                     for market_score_control in market_score_control_values:
-                        name = (
-                            f"{factor_set}_top{top_k}_riskoff"
-                            f"{_format_exposure(exposure)}"
+                        thresholds = (
+                            market_score_threshold_values
+                            if market_score_control
+                            else (config.market_score_threshold,)
                         )
-                        if include_control_suffix:
+                        for threshold in thresholds:
                             name = (
-                                f"{name}_riskctrl{_format_bool(risk_control)}"
-                                f"_mscore{_format_bool(market_score_control)}"
+                                f"{factor_set}_top{top_k}_riskoff"
+                                f"{_format_exposure(exposure)}"
                             )
-                        specs.append(
-                            ParameterSweepSpec(
-                                name=name,
-                                factor_set=factor_set,
-                                description=description,
-                                factors=fields,
-                                factor_weights=weights,
-                                top_k=top_k,
-                                risk_off_exposure=exposure,
-                                risk_control=risk_control,
-                                market_score_control=market_score_control,
+                            if include_control_suffix:
+                                name = (
+                                    f"{name}_riskctrl{_format_bool(risk_control)}"
+                                    f"_mscore{_format_bool(market_score_control)}"
+                                )
+                            if market_score_control and include_threshold_suffix:
+                                name = (
+                                    f"{name}_mthr{_format_threshold(threshold)}"
+                                )
+                            specs.append(
+                                ParameterSweepSpec(
+                                    name=name,
+                                    factor_set=factor_set,
+                                    description=description,
+                                    factors=fields,
+                                    factor_weights=weights,
+                                    top_k=top_k,
+                                    risk_off_exposure=exposure,
+                                    risk_control=risk_control,
+                                    market_score_control=market_score_control,
+                                    market_score_threshold=threshold,
+                                )
                             )
-                    )
     if not specs:
         raise ValueError("No parameter sweep candidates were generated")
     return specs
@@ -271,6 +298,7 @@ def run_parameter_sweep(
     risk_off_exposures: tuple[float, ...] = DEFAULT_RISK_OFF_EXPOSURES,
     risk_control_values: tuple[bool, ...] = DEFAULT_RISK_CONTROL_VALUES,
     market_score_control_values: tuple[bool, ...] | None = None,
+    market_score_threshold_values: tuple[float, ...] = DEFAULT_MARKET_SCORE_THRESHOLDS,
 ) -> list[ParameterSweepRun]:
     resolved_market_score_control_values = (
         DEFAULT_MARKET_SCORE_CONTROL_VALUES
@@ -297,6 +325,7 @@ def run_parameter_sweep(
         risk_off_exposures=risk_off_exposures,
         risk_control_values=risk_control_values,
         market_score_control_values=resolved_market_score_control_values,
+        market_score_threshold_values=market_score_threshold_values,
     )
     runs: list[ParameterSweepRun] = []
     for spec in specs:
@@ -307,6 +336,7 @@ def run_parameter_sweep(
             risk_off_exposure=spec.risk_off_exposure,
             risk_control=spec.risk_control,
             market_score_control=spec.market_score_control,
+            market_score_threshold=spec.market_score_threshold,
         )
         result = run_backtest(
             data,
@@ -381,6 +411,7 @@ def _write_sweep_metrics(runs: list[ParameterSweepRun], path: Path) -> None:
                 "risk_off_exposure",
                 "risk_control",
                 "market_score_control",
+                "market_score_threshold",
                 "rebalances",
                 *metric_columns,
             ]
@@ -397,6 +428,7 @@ def _write_sweep_metrics(runs: list[ParameterSweepRun], path: Path) -> None:
                     f"{run.spec.risk_off_exposure:.6f}",
                     str(run.spec.risk_control).lower(),
                     str(run.spec.market_score_control).lower(),
+                    f"{run.spec.market_score_threshold:.6f}",
                     len(run.result.rebalances),
                     *[
                         f"{run.result.metrics[metric]:.10f}"

@@ -38,6 +38,7 @@ This writes:
 
 - `data/real/industry_close.csv`
 - `data/real/industry_amount.csv` when AKShare returns amount or volume fields
+- `data/real/market_close.csv` with default `CSI300`, `CSIAll`, and `ChiNext` columns
 - `data/real/benchmark_close.csv`
 - `data/real/manifest.json`
 
@@ -81,6 +82,22 @@ $env:PYTHONPATH="src"
 python -m quant_rotation sweep --config configs/production.toml --industry-only
 ```
 
+Run a focused market score threshold calibration:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m quant_rotation sweep `
+  --config configs/production.toml `
+  --industry-only `
+  --factor-set ret60_ret5 `
+  --top-k 5 `
+  --risk-off-exposure 0 `
+  --risk-control true `
+  --market-score-control true `
+  --market-score-threshold=-0.05,-0.02,0,0.02,0.05 `
+  --output-dir reports/production/market_threshold_sweep
+```
+
 Run train/test validation:
 
 ```powershell
@@ -115,11 +132,14 @@ each factor's marginal contribution inside the configured full model. It writes:
 - `factor_equity_curves.csv`
 - `factor_annual_returns.csv`
 
-The sweep command defaults to the current narrow candidate set:
-`ret60` and `ret60_ret5`, `top_k=5`, `risk_off_exposure=0,0.3,0.5`,
-and both `risk_control=true/false` plus `market_score_control=true/false`
-when a benchmark or market data is available. Use `--factor-set`, `--top-k`,
-`--risk-control`, and `--market-score-control` to widen or narrow that space.
+The sweep command defaults to the current candidate set:
+`ret60`, `ret60_ret5`, `ret60_ret120`, and `ret60_ret120_ret5`,
+`top_k=3,5,8`, `risk_off_exposure=0,0.2,0.3,0.5`, and both
+`risk_control=true/false` plus `market_score_control=true/false` when a
+benchmark or market data is available. Use `--factor-set`, `--top-k`,
+`--risk-control`, `--market-score-control`, and `--market-score-threshold` to
+widen or narrow that space. Threshold values only expand candidates where
+`market_score_control=true`.
 It writes:
 
 - `parameter_sweep.csv`

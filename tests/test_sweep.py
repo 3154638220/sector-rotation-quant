@@ -71,7 +71,36 @@ class ParameterSweepTests(unittest.TestCase):
                 encoding="utf-8"
             ).splitlines()[0]
             self.assertIn("risk_off_exposure", metrics_text.splitlines()[0])
+            self.assertIn("market_score_threshold", metrics_text.splitlines()[0])
             self.assertIn("equal_weight", equity_header)
+
+    def test_market_score_threshold_grid_only_expands_market_score_candidates(
+        self,
+    ) -> None:
+        specs = build_parameter_sweep_specs(
+            StrategyConfig(),
+            factor_set_names=("ret60",),
+            top_k_values=(5,),
+            risk_off_exposures=(0.0,),
+            risk_control_values=(True,),
+            market_score_control_values=(False, True),
+            market_score_threshold_values=(-0.05, 0.0, 0.02),
+        )
+
+        self.assertEqual(len(specs), 4)
+        self.assertEqual(
+            sum(1 for spec in specs if not spec.market_score_control),
+            1,
+        )
+        threshold_specs = [
+            spec for spec in specs if spec.market_score_control
+        ]
+        self.assertEqual(
+            {spec.market_score_threshold for spec in threshold_specs},
+            {-0.05, 0.0, 0.02},
+        )
+        self.assertTrue(any("_mthrneg0p05" in spec.name for spec in specs))
+        self.assertTrue(any("_mthr0p02" in spec.name for spec in specs))
 
 
 if __name__ == "__main__":

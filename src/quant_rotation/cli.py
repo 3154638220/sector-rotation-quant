@@ -17,12 +17,13 @@ from .data import (
 )
 from .decomposition import run_factor_decomposition, write_factor_decomposition_reports
 from .models import BreadthData
-from .real_data import fetch_and_write_real_data, parse_date
+from .real_data import DEFAULT_MARKET_INDICES, IndexInfo, fetch_and_write_real_data, parse_date
 from .reports import write_reports
 from .sample_data import generate_sample_data
 from .sweep import run_parameter_sweep, write_parameter_sweep_reports
 from .sweep import (
     DEFAULT_FACTOR_SET_NAMES,
+    DEFAULT_MARKET_SCORE_THRESHOLDS,
     DEFAULT_RISK_CONTROL_VALUES,
     DEFAULT_RISK_OFF_EXPOSURES,
     DEFAULT_TOP_K_VALUES,
@@ -74,6 +75,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Seconds to wait between industry index requests",
+    )
+    fetch.add_argument(
+        "--market-indexes",
+        default=",".join(
+            f"{info.name}:{info.code}" for info in DEFAULT_MARKET_INDICES
+        ),
+        help=(
+            "Comma-separated market index list as NAME:SYMBOL. "
+            "Use an empty string to skip market_close.csv."
+        ),
     )
 
     run = subparsers.add_parser("run", help="Run a backtest")
@@ -148,6 +159,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sweep.add_argument(
+        "--market-score-threshold",
+        default=",".join(str(value) for value in DEFAULT_MARKET_SCORE_THRESHOLDS),
+        help=(
+            "Comma-separated market score threshold values, e.g. "
+            "-0.05,-0.02,0,0.02,0.05. Values only expand candidates where "
+            "market_score_control is true."
+        ),
+    )
+    sweep.add_argument(
         "--top-n-equity",
         type=int,
         default=10,
@@ -199,6 +219,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated market_score_control values, e.g. false,true. "
             "Use auto to include true only when market data or benchmark exists."
+        ),
+    )
+    validate.add_argument(
+        "--market-score-threshold",
+        default=",".join(str(value) for value in DEFAULT_MARKET_SCORE_THRESHOLDS),
+        help=(
+            "Comma-separated market score threshold values, e.g. "
+            "-0.05,-0.02,0,0.02,0.05. Values only expand candidates where "
+            "market_score_control is true."
         ),
     )
     validate.add_argument(
@@ -487,6 +516,31 @@ def _parse_float_tuple(value: str, name: str) -> tuple[float, ...]:
     return result
 
 
+def _parse_market_index_list(value: str) -> list[IndexInfo]:
+    indexes: list[IndexInfo] = []
+    raw = value.strip()
+    if not raw:
+        return indexes
+    for item in raw.split(","):
+        normalized = item.strip()
+        if not normalized:
+            continue
+        if ":" not in normalized:
+            raise ValueError(
+                "--market-indexes entries must use NAME:SYMBOL, "
+                f"got {normalized!r}"
+            )
+        name, symbol = (part.strip() for part in normalized.split(":", 1))
+        if not name or not symbol:
+            raise ValueError(
+                "--market-indexes entries must include both NAME and SYMBOL"
+            )
+        indexes.append(IndexInfo(symbol, name))
+    if not indexes:
+        raise ValueError("--market-indexes must contain at least one valid entry")
+    return indexes
+
+
 def sweep_command(args: argparse.Namespace) -> int:
     (
         app_config,
@@ -520,6 +574,10 @@ def sweep_command(args: argparse.Namespace) -> int:
         args.market_score_control,
         "--market-score-control",
     )
+    market_score_threshold_values = _parse_float_tuple(
+        args.market_score_threshold,
+        "--market-score-threshold",
+    )
     runs = run_parameter_sweep(
         industry_data,
         benchmark_closes,
@@ -536,6 +594,7 @@ def sweep_command(args: argparse.Namespace) -> int:
         risk_off_exposures=risk_off_exposures,
         risk_control_values=risk_control_values,
         market_score_control_values=market_score_control_values,
+        market_score_threshold_values=market_score_threshold_values,
     )
     output_dir = args.output_dir or str(Path(app_config.output_dir) / "parameter_sweep")
     write_parameter_sweep_reports(
@@ -587,6 +646,10 @@ def validate_command(args: argparse.Namespace) -> int:
         args.market_score_control,
         "--market-score-control",
     )
+    market_score_threshold_values = _parse_float_tuple(
+        args.market_score_threshold,
+        "--market-score-threshold",
+    )
     if args.walk_forward:
         folds = run_walk_forward_validation(
             industry_data,
@@ -604,6 +667,7 @@ def validate_command(args: argparse.Namespace) -> int:
             risk_off_exposures=risk_off_exposures,
             risk_control_values=risk_control_values,
             market_score_control_values=market_score_control_values,
+            market_score_threshold_values=market_score_threshold_values,
             train_window=args.train_window,
             test_window=args.test_window,
             step=args.step,
@@ -676,6 +740,7 @@ def validate_command(args: argparse.Namespace) -> int:
         risk_off_exposures=risk_off_exposures,
         risk_control_values=risk_control_values,
         market_score_control_values=market_score_control_values,
+        market_score_threshold_values=market_score_threshold_values,
         train_end=train_end,
         test_start=test_start,
         split_ratio=args.split_ratio,
@@ -713,11 +778,13 @@ def sample_data_command(args: argparse.Namespace) -> int:
 def fetch_real_data_command(args: argparse.Namespace) -> int:
     start = parse_date(args.start)
     end = parse_date(args.end)
+    market_indices = _parse_market_index_list(args.market_indexes)
     summary = fetch_and_write_real_data(
         args.output,
         start,
         end,
         benchmark_symbol=args.benchmark,
+        market_indices=market_indices,
         progress=print,
         request_interval=args.request_interval,
     )
@@ -726,6 +793,8 @@ def fetch_real_data_command(args: argparse.Namespace) -> int:
     print(f"Rows: {summary.rows}")
     print(f"Industries: {summary.industries}")
     print(f"Benchmark: {summary.benchmark_symbol}")
+    if summary.market_close_path:
+        print(f"Market close: {summary.market_close_path.resolve()}")
     print(f"Manifest: {summary.manifest_path.resolve()}")
     return 0
 

@@ -52,6 +52,13 @@ class IndexInfo:
     name: str
 
 
+DEFAULT_MARKET_INDICES = [
+    IndexInfo("sh000300", "CSI300"),
+    IndexInfo("sh000985", "CSIAll"),
+    IndexInfo("sz399006", "ChiNext"),
+]
+
+
 @dataclass(frozen=True)
 class RealDataSummary:
     output_dir: Path
@@ -64,6 +71,8 @@ class RealDataSummary:
     rows: int
     industries: int
     benchmark_symbol: str
+    market_close_path: Path | None = None
+    market_symbols: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -287,6 +296,45 @@ def fetch_benchmark_close_data(
     return closes
 
 
+def fetch_market_close_data(
+    symbols: list[IndexInfo],
+    start: date,
+    end: date,
+    *,
+    ak: Any | None = None,
+    progress: ProgressCallback | None = None,
+) -> PriceData:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+    if not symbols:
+        raise ValueError("symbols must contain at least one market index")
+
+    ak = ak or _require_akshare()
+    closes_by_asset: dict[str, dict[date, float]] = {}
+    for number, info in enumerate(symbols, start=1):
+        if progress:
+            progress(
+                f"Fetching market index {number}/{len(symbols)}: "
+                f"{info.code} {info.name}"
+            )
+        closes_by_asset[info.name] = fetch_benchmark_close_data(
+            info.code,
+            start,
+            end,
+            ak=ak,
+        )
+
+    common_dates = sorted(set.intersection(*(set(values) for values in closes_by_asset.values())))
+    if not common_dates:
+        raise ValueError("No common trading dates found across market indices")
+
+    closes = {
+        asset: [values[day] for day in common_dates]
+        for asset, values in closes_by_asset.items()
+    }
+    return PriceData(dates=common_dates, closes=closes)
+
+
 def _write_industry_close(path: Path, data: PriceData) -> None:
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
@@ -323,6 +371,10 @@ def _write_industry_amount(path: Path, data: PriceData) -> None:
             )
 
 
+def _write_market_close(path: Path, data: PriceData) -> None:
+    _write_industry_close(path, data)
+
+
 def _slice_price_data(data: PriceData, dates: list[date]) -> PriceData:
     position_by_date = {day: index for index, day in enumerate(data.dates)}
     closes = {
@@ -338,7 +390,9 @@ def write_real_data_files(
     benchmark_closes: dict[date, float],
     *,
     amount_data: PriceData | None = None,
+    market_data: PriceData | None = None,
     benchmark_symbol: str,
+    market_symbols: dict[str, str] | None = None,
     provider: str = "akshare",
 ) -> RealDataSummary:
     if amount_data is not None and amount_data.assets != industry_data.assets:
@@ -347,22 +401,30 @@ def write_real_data_files(
     common_dates = sorted(set(industry_data.dates) & set(benchmark_closes))
     if amount_data is not None:
         common_dates = sorted(set(common_dates) & set(amount_data.dates))
+    if market_data is not None:
+        common_dates = sorted(set(common_dates) & set(market_data.dates))
     if not common_dates:
-        raise ValueError("No common dates found across industry, benchmark, and amount data")
+        raise ValueError(
+            "No common dates found across industry, benchmark, amount, and market data"
+        )
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     aligned_industry_data = _slice_price_data(industry_data, common_dates)
     aligned_amount_data = _slice_price_data(amount_data, common_dates) if amount_data else None
+    aligned_market_data = _slice_price_data(market_data, common_dates) if market_data else None
 
     industry_path = output_path / "industry_close.csv"
     amount_path = output_path / "industry_amount.csv" if aligned_amount_data else None
+    market_path = output_path / "market_close.csv" if aligned_market_data else None
     benchmark_path = output_path / "benchmark_close.csv"
     manifest_path = output_path / "manifest.json"
 
     _write_industry_close(industry_path, aligned_industry_data)
     if aligned_amount_data and amount_path:
         _write_industry_amount(amount_path, aligned_amount_data)
+    if aligned_market_data and market_path:
+        _write_market_close(market_path, aligned_market_data)
     _write_benchmark_close(benchmark_path, common_dates, benchmark_closes)
 
     manifest = {
@@ -377,9 +439,12 @@ def write_real_data_files(
         "files": {
             "industry_close": industry_path.name,
             "industry_amount": amount_path.name if amount_path else None,
+            "market_close": market_path.name if market_path else None,
             "benchmark_close": benchmark_path.name,
         },
     }
+    if market_symbols:
+        manifest["market_symbols"] = market_symbols
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
 
@@ -394,6 +459,8 @@ def write_real_data_files(
         rows=len(common_dates),
         industries=len(aligned_industry_data.assets),
         benchmark_symbol=benchmark_symbol,
+        market_close_path=market_path,
+        market_symbols=market_symbols,
     )
 
 
@@ -403,11 +470,12 @@ def fetch_and_write_real_data(
     end: date,
     *,
     benchmark_symbol: str = "sh000300",
+    market_indices: list[IndexInfo] | None = None,
     progress: ProgressCallback | None = None,
     request_interval: float = 0.0,
 ) -> RealDataSummary:
     ak = _require_akshare()
-    market_data = fetch_sw_level1_market_data(
+    industry_market_data = fetch_sw_level1_market_data(
         start,
         end,
         ak=ak,
@@ -423,10 +491,26 @@ def fetch_and_write_real_data(
         end,
         ak=ak,
     )
+    resolved_market_indices = market_indices if market_indices is not None else DEFAULT_MARKET_INDICES
+    style_market_data = None
+    market_symbols = None
+    if resolved_market_indices:
+        style_market_data = fetch_market_close_data(
+            resolved_market_indices,
+            start,
+            end,
+            ak=ak,
+            progress=progress,
+        )
+        market_symbols = {
+            info.name: info.code for info in resolved_market_indices
+        }
     return write_real_data_files(
         output_dir,
-        market_data.close,
+        industry_market_data.close,
         benchmark_closes,
-        amount_data=market_data.amount,
+        amount_data=industry_market_data.amount,
+        market_data=style_market_data,
         benchmark_symbol=benchmark_symbol,
+        market_symbols=market_symbols,
     )

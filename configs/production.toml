@@ -2,8 +2,7 @@
 industry_close = "../data/real/industry_close.csv"
 industry_amount = "../data/real/industry_amount.csv"
 benchmark_close = "../data/real/benchmark_close.csv"
-# Add market/style index closes after data/real/market_close.csv is prepared.
-# market_close = "../data/real/market_close.csv"
+market_close = "../data/real/market_close.csv"
 
 [strategy]
 rebalance_every = 20
@@ -29,3 +28,8 @@ ret5_weight = -0.50
 
 [reports]
 output_dir = "../reports/production"
+
+[market_weights]
+CSI300 = 0.50
+CSIAll = 0.30
+ChiNext = 0.20

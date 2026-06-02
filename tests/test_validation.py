@@ -90,6 +90,7 @@ class TrainTestValidationTests(unittest.TestCase):
                 encoding="utf-8"
             ).splitlines()[0]
             self.assertIn("test_annualized_return", summary_header)
+            self.assertIn("market_score_threshold", summary_header)
             self.assertIn("segment", equity_header)
 
     def test_walk_forward_validation_runs_and_writes_reports(self) -> None:
@@ -136,6 +137,7 @@ class TrainTestValidationTests(unittest.TestCase):
             self.assertIn("selection_metric", candidates_header)
             self.assertIn("train_selection_score", candidates_header)
             self.assertIn("risk_control", candidates_header)
+            self.assertIn("market_score_threshold", candidates_header)
             self.assertIn("selected_name", equity_header)
             self.assertIn("test_std,sharpe_ratio", summary_text)
             oos_header = (report_dir / "walk_forward_oos_equity.csv").read_text(

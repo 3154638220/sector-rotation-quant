@@ -15,24 +15,30 @@
 | A2 | 更新 README 推荐命令流程 | ✅ 已完成。Quick Start 已改为真实数据优先，sample 数据作为 smoke test |
 | A3 | 在 `configs/real.toml` 中关闭拖累因子 | ✅ 已完成。`ret20 / ret120 / amount_strength / breadth / vol20` 均显式置零，保留 `ret60_weight = 1.00` 与 `ret5_weight = -0.50` |
 | B1 | 尝试扩充历史数据至 2010 年 | ⚠️ 已执行但受数据源限制。`fetch-real-data --start 2010-01-04` 成功写入 `data/real_extended`，但 AKShare 当前 `index_hist_sw` 实际只返回 `2021-12-13` 至 `2026-06-02` 的共同日期 |
+| B2 | 增加多指数 `market_close.csv` | ✅ 已完成。`fetch-real-data` 默认写入 `CSI300`、`CSIAll`、`ChiNext` 三列宽表；`production.toml` / `real.toml` 已启用 0.5/0.3/0.2 市场权重 |
+| B3 | 重校 `market_score_threshold` | ⚠️ 阶段性完成。新增 sweep/validate 阈值网格参数；当前 2021-2026 全样本中 `0.02` 年化 **8.48%**、最大回撤 **-17.26%**、Sharpe **0.68**，但月胜率仍 **29.1%**，需长历史复核后再改生产阈值 |
 | B4 | 改进 walk-forward 候选选择指标 | ✅ 已完成。新增 `sharpe_plus_calmar` 选择指标，并降低 composite 中换手率惩罚 |
 | D1 | 扩大参数扫描候选集 | ✅ 已完成。默认覆盖 `ret60`、`ret60_ret5`、`ret60_ret120`、`ret60_ret120_ret5`，`top_k=(3,5,8)`，`risk_off=(0.0,0.2,0.3,0.5)` |
+| D2 | 增加基于持有期的性能分析 | ✅ 已完成。`write_reports` 现在输出 `holding_period_returns.csv`、`holding_period_return_distribution.csv`、`industry_selection_frequency.csv`、`risk_control_frequency.csv`，可直接诊断调仓周期收益、行业选择集中度与风控触发频率 |
 | D3 | 添加分年度超额报告 | ✅ 已完成。`annual_returns.csv` 已包含 `benchmark_return`、`industry_equal_weight_return`、`excess_vs_benchmark`、`excess_vs_equal_weight` |
 
 ### 0.2 验证结果
 
 | 验证项 | 命令 / 输出 | 结果 |
 |------|-------------|------|
-| 单元测试 | `python -m unittest discover -s tests` | ✅ 21 个测试全部通过 |
+| 单元测试 | `python -m unittest discover -s tests` | ✅ 23 个测试全部通过 |
 | 生产配置回测 | `python -m quant_rotation run --config configs/production.toml` | 年化收益 **6.51%**，最大回撤 **-17.26%**，Sharpe **0.52**，最终净值 **1.3079** |
 | 修改后 `real.toml` 回测 | `python -m quant_rotation run --config configs/real.toml` | 年化收益 **4.90%**，最大回撤 **-22.78%**，Sharpe **0.38**；由于仍保留 `risk_off_exposure = 0.50`，弱于 production |
 | 扩展候选 sweep | `python -m quant_rotation sweep --config configs/production.toml --industry-only` | ✅ 192 个候选跑通；最佳为 `ret60_ret5_top5_riskoff0_riskctrl1_mscore0` |
 | walk-forward | `python -m quant_rotation validate --config configs/production.toml --industry-only --walk-forward --selection-metric sharpe_plus_calmar` | ✅ 4 折跑通；`walk_forward_summary.csv` 已输出测试 Sharpe 的 mean / median / std |
+| 多指数数据管道 | `python -m quant_rotation fetch-real-data --output data/real --start 2021-12-13 --end 2026-06-02 --benchmark sh000300` | ✅ 写入 `data/real/market_close.csv`，共同日期 1074 行；列为 `CSI300`、`CSIAll`、`ChiNext` |
+| 阈值扫描 | `python -m quant_rotation sweep --config configs/production.toml --industry-only --factor-set ret60_ret5 --top-k 5 --risk-off-exposure 0 --risk-control true --market-score-control true --market-score-threshold=-0.05,-0.02,0,0.02,0.05` | ⚠️ 全样本最佳 `threshold=0.02`，报告输出到 `reports/production/market_threshold_sweep`；walk-forward 固定候选中 `0.00` 与 `0.02` OOS 净值相同 |
+| 报告增强 | `python -m unittest discover -s tests` + `python -m quant_rotation run --config configs/production.toml` | ✅ 24 个测试全部通过；生产报告新增 4 个 D2 诊断 CSV。当前生产策略 48 次调仓中 29 次空仓，`risk_off_rebalance_share = 60.4%` |
 
 ### 0.3 当前阻塞与下一步
 
 - **历史数据扩展仍是最大阻塞**：本地 AKShare 没有可直接使用的 `sw_index_daily` 函数；`index_analysis_daily_sw` 当前抛出 `KeyError '发布日期'`，暂不能无痛替代。需要寻找新的稳定数据源或修补 AKShare 对申万历史日线接口的适配。
-- **多指数 `market_close.csv` 尚未完成**：下一步应新增沪深300、中证全指、创业板指三列宽表，并在生产候选之外做阈值校准。
+- **`market_score_threshold` 已完成阶段性扫描，但不宜仓促定版**：多指数加权市场分数下，全样本 `0.02` 优于 `0.0`，但 walk-forward 中两者 OOS 净值相同，且月胜率目标尚未达到。生产阈值暂保留 `0.0`，等待更长历史复核。
 - **Phase 3 广度数据仍未进入生产**：`production.toml` 中 breadth 权重保持 `0.00`，等待成分股历史快照与 breadth 数据管道完成后再增量验证。
 
 ---
@@ -101,7 +107,7 @@
 ### 问题 4：Phase 3/4/5 缺乏真实数据支撑
 
 - 行业内部广度数据（breadth20/60）需要成分股收盘价逐日计算，`data/real/` 目录下不存在
-- 多指数市场环境（沪深300 + 中证全指 + 创业板）缺少 `market_close.csv`
+- 多指数市场环境（沪深300 + 中证全指 + 创业板）已有 `market_close.csv`，但阈值仍未校准
 - 股票选股需要全 A 股历史收盘价和行业归属图，量级大、难度高
 
 ---
@@ -263,13 +269,16 @@ DEFAULT_TOP_K_VALUES = (3, 5, 8)       # 增加 top_k=3 的候选
 DEFAULT_RISK_OFF_EXPOSURES = (0.0, 0.2, 0.3, 0.5)  # 细化 risk_off 格点
 ```
 
-**D2：增加基于持有期的性能分析**
+**D2：增加基于持有期的性能分析（已完成）**
 
-当前报告只有月胜率，缺少对换仓周期的分析。建议在 `reports.py` 中增加：
+`reports.py` 已在每次 `run` 时自动输出以下诊断文件：
 
-- 各调仓周期的持有期收益分布（bar chart 数据）
-- 行业选择频率统计（哪些行业被选中最多）
-- 风控激活频率（risk_off 触发月份占比）
+- `holding_period_returns.csv`：逐调仓周期收益、相对沪深300超额、相对行业等权超额、暴露、换手、风控状态
+- `holding_period_return_distribution.csv`：持有期收益分箱，可直接作为 bar chart 数据
+- `industry_selection_frequency.csv`：行业入选次数、入选占比、风险开启/关闭状态下的入选次数、平均入选权重
+- `risk_control_frequency.csv`：risk_off 调仓占比、risk_off 月份占比、趋势过滤失败占比、market_score 失败占比、风险开启/关闭时的平均暴露
+
+当前 `configs/production.toml` 回测结果显示，48 次调仓中 29 次为空仓风控，`risk_off_rebalance_share = 60.4%`，这为“月胜率偏低”提供了更直接的诊断证据。
 
 **D3：添加相对等权基准的分年度超额图**
 
@@ -348,11 +357,12 @@ prosperity_i = 0.5 * 行业近期成交额增速 + 0.5 * 行业内盈利修正�
 |--------|------|----------|----------|
 | 🔴 P0 | **提交 production.toml**（关闭 ret20/amount_strength）| ✅ 已完成 | 立即改善全因子配置性能 |
 | 🔴 P0 | **扩充历史数据至 2010 年**（阶段 B1）| ⚠️ 已尝试，AKShare 当前仅返回 2021-12-13 以来共同日期 | 解决验证不稳定的根本问题 |
-| 🟠 P1 | 多指数 market_close.csv（阶段 B2）| ⏳ 未开始 | 改善市场环境判断准确性 |
-| 🟠 P1 | 重校 market_score_threshold（阶段 B3）| ⏳ 依赖扩展数据或多指数数据 | 提升月胜率 |
+| 🟠 P1 | 多指数 market_close.csv（阶段 B2）| ✅ 已完成 | 改善市场环境判断准确性 |
+| 🟠 P1 | 重校 market_score_threshold（阶段 B3）| ⚠️ 阶段性完成，需长历史复核 | 提升月胜率 |
 | 🟠 P1 | 扩大参数扫描候选集（阶段 D1）| ✅ 已完成 | 更全面的候选覆盖 |
 | 🟡 P2 | 广度数据管道 fetch-breadth-data（阶段 C1）| ⏳ 未开始 | 验证 Phase 3 有效性 |
 | 🟡 P2 | 改进 walk-forward 选择指标（阶段 B4）| ✅ 已完成 | 降低验证噪声 |
+| 🟡 P2 | 持有期 / 行业频率 / 风控频率报告（阶段 D2）| ✅ 已完成 | 解释调仓收益分布、行业拥挤度与风控触发来源 |
 | 🟡 P2 | 分年度超额等详细报告（阶段 D3）| ✅ 已完成 | 更清晰的策略诊断 |
 | 🟢 P3 | Phase 5 个股选择基础设施（阶段 E）| ⏳ 未开始 | 从行业到股票的完整策略 |
 | 🟢 P3 | 估值/景气度因子（阶段 F）| ⏳ 未开始 | 在当前动量框架上叠加 |

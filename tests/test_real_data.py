@@ -11,6 +11,7 @@ from quant_rotation.models import PriceData
 from quant_rotation.real_data import (
     IndexInfo,
     fetch_benchmark_close_data,
+    fetch_market_close_data,
     fetch_sw_level1_close_data,
     parse_date,
     write_real_data_files,
@@ -50,6 +51,23 @@ class FakeAk:
         end_date: str,
     ) -> FakeFrame:
         self.benchmark_request = (symbol, start_date, end_date)
+        rows_by_symbol = {
+            "sh000300": [
+                {"date": "2024-01-02", "close": "3000.0"},
+                {"date": "2024-01-03", "close": "3010.0"},
+            ],
+            "sh000985": [
+                {"date": "2024-01-01", "close": "5000.0"},
+                {"date": "2024-01-02", "close": "5010.0"},
+                {"date": "2024-01-03", "close": "5020.0"},
+            ],
+            "sz399006": [
+                {"date": "2024-01-02", "close": "2000.0"},
+                {"date": "2024-01-03", "close": "2020.0"},
+            ],
+        }
+        if symbol in rows_by_symbol:
+            return FakeFrame(rows_by_symbol[symbol])
         return FakeFrame(
             [
                 {"date": "2024-01-02", "close": "3000.0"},
@@ -93,6 +111,24 @@ class RealDataTests(unittest.TestCase):
         )
         self.assertEqual(closes[date(2024, 1, 3)], 3010.0)
 
+    def test_fetch_market_close_data_uses_common_dates_and_asset_names(self) -> None:
+        fake_ak = FakeAk()
+        market_data = fetch_market_close_data(
+            [
+                IndexInfo("sh000300", "CSI300"),
+                IndexInfo("sh000985", "CSIAll"),
+                IndexInfo("sz399006", "ChiNext"),
+            ],
+            date(2024, 1, 1),
+            date(2024, 1, 3),
+            ak=fake_ak,
+        )
+
+        self.assertEqual(market_data.dates, [date(2024, 1, 2), date(2024, 1, 3)])
+        self.assertEqual(market_data.assets, ["CSI300", "CSIAll", "ChiNext"])
+        self.assertEqual(market_data.closes["CSI300"], [3000.0, 3010.0])
+        self.assertEqual(market_data.closes["CSIAll"], [5010.0, 5020.0])
+
     def test_write_real_data_files_outputs_loadable_csvs(self) -> None:
         industry_data = PriceData(
             dates=[date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)],
@@ -112,6 +148,13 @@ class RealDataTests(unittest.TestCase):
             date(2024, 1, 2): 3000.0,
             date(2024, 1, 3): 3010.0,
         }
+        market_data = PriceData(
+            dates=[date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)],
+            closes={
+                "CSI300": [2990.0, 3000.0, 3010.0],
+                "CSIAll": [4990.0, 5000.0, 5010.0],
+            },
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             summary = write_real_data_files(
@@ -119,19 +162,26 @@ class RealDataTests(unittest.TestCase):
                 industry_data,
                 benchmark,
                 amount_data=amount_data,
+                market_data=market_data,
                 benchmark_symbol="sh000300",
+                market_symbols={"CSI300": "sh000300", "CSIAll": "sh000985"},
             )
             loaded_industry = load_wide_close_csv(summary.industry_close_path)
             loaded_amount = load_wide_asset_csv(
                 summary.industry_amount_path or "",
                 value_name="amount",
             )
+            loaded_market = load_wide_close_csv(summary.market_close_path or "")
             loaded_benchmark_dates, loaded_benchmark = load_benchmark_csv(
                 summary.benchmark_close_path
             )
 
         self.assertEqual(summary.rows, 2)
         self.assertIsNotNone(summary.industry_amount_path)
+        self.assertIsNotNone(summary.market_close_path)
+        self.assertEqual(loaded_market.dates, [date(2024, 1, 2), date(2024, 1, 3)])
+        self.assertEqual(loaded_market.assets, ["CSI300", "CSIAll"])
+        self.assertEqual(loaded_market.closes["CSIAll"], [5000.0, 5010.0])
         self.assertEqual(loaded_industry.dates, [date(2024, 1, 2), date(2024, 1, 3)])
         self.assertEqual(loaded_industry.assets, ["行业A", "行业B"])
         self.assertEqual(loaded_amount.closes["行业A"], [1100.0, 1200.0])
