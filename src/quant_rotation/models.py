@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
+
+
+@dataclass(frozen=True)
+class PriceData:
+    dates: list[date]
+    closes: dict[str, list[float]]
+
+    @property
+    def assets(self) -> list[str]:
+        return list(self.closes.keys())
+
+    def __post_init__(self) -> None:
+        if not self.dates:
+            raise ValueError("PriceData requires at least one date")
+        n = len(self.dates)
+        for asset, values in self.closes.items():
+            if len(values) != n:
+                raise ValueError(
+                    f"Asset {asset!r} has {len(values)} closes, expected {n}"
+                )
+
+
+@dataclass(frozen=True)
+class FactorWeights:
+    ret20: float = 0.40
+    ret60: float = 0.40
+    ret120: float = 0.20
+    amount_strength: float = 0.25
+    breadth20: float = 0.12
+    breadth60: float = 0.08
+    vol20: float = -0.30
+    ret5: float = -0.20
+
+
+@dataclass(frozen=True)
+class BreadthData:
+    breadth20: PriceData | None = None
+    breadth60: PriceData | None = None
+
+    @property
+    def available(self) -> bool:
+        return self.breadth20 is not None or self.breadth60 is not None
+
+
+@dataclass(frozen=True)
+class StockSelectionConfig:
+    enabled: bool = False
+    top_n_per_industry: int = 5
+    min_stocks_per_industry: int = 1
+    max_stock_weight: float = 0.10
+    ret20: float = 0.45
+    ret60: float = 0.25
+    amount_strength: float = 0.10
+    vol20: float = -0.20
+    ret5: float = -0.10
+
+
+@dataclass(frozen=True)
+class StrategyConfig:
+    rebalance_every: int = 20
+    top_k: int = 5
+    max_industry_weight: float = 0.30
+    transaction_cost: float = 0.001
+    risk_control: bool = True
+    market_ma_window: int = 120
+    market_score_control: bool = False
+    market_score_window: int = 60
+    market_score_threshold: float = 0.0
+    risk_off_exposure: float = 0.50
+    factor_weights: FactorWeights = field(default_factory=FactorWeights)
+    stock_selection: StockSelectionConfig = field(default_factory=StockSelectionConfig)
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    industry_close_path: str
+    industry_amount_path: str | None
+    industry_breadth20_path: str | None
+    industry_breadth60_path: str | None
+    market_close_path: str | None
+    stock_close_path: str | None
+    stock_amount_path: str | None
+    stock_industry_map_path: str | None
+    benchmark_close_path: str | None
+    output_dir: str
+    market_weights: dict[str, float] = field(default_factory=dict)
+    strategy: StrategyConfig = field(default_factory=StrategyConfig)
+
+
+@dataclass(frozen=True)
+class FactorSnapshot:
+    signal_date: date
+    scores: dict[str, float]
+    fields: dict[str, dict[str, float]]
+
+
+@dataclass(frozen=True)
+class RebalanceEvent:
+    date: date
+    signal_date: date
+    holdings: list[str]
+    weights: dict[str, float]
+    exposure: float
+    turnover: float
+    cost: float
+    market_trend: bool
+    market_score: float | None = None
+    market_score_ok: bool = True
+    risk_on: bool = True
+    selected_industries: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BacktestResult:
+    dates: list[date]
+    strategy_equity: list[float]
+    benchmark_equity: list[float] | None
+    equal_weight_equity: list[float]
+    daily_returns: list[float]
+    rebalances: list[RebalanceEvent]
+    metrics: dict[str, float]
+    annual_returns: dict[int, float]

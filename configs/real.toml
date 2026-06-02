@@ -1,0 +1,48 @@
+[data]
+industry_close = "../data/real/industry_close.csv"
+industry_amount = "../data/real/industry_amount.csv"
+# Add precomputed constituent breadth files when available.
+# industry_breadth20 = "../data/real/industry_breadth20.csv"
+# industry_breadth60 = "../data/real/industry_breadth60.csv"
+# Add market/style index closes when available; otherwise market_score_control
+# falls back to benchmark_close.
+# market_close = "../data/real/market_close.csv"
+# Add constituent stock data to enable phase-5 stock selection.
+# stock_close = "../data/real/stock_close.csv"
+# stock_amount = "../data/real/stock_amount.csv"
+# stock_industry_map = "../data/real/stock_industry_map.csv"
+benchmark_close = "../data/real/benchmark_close.csv"
+
+[strategy]
+rebalance_every = 20
+top_k = 5
+max_industry_weight = 0.30
+transaction_cost = 0.001
+risk_control = true
+market_ma_window = 120
+market_score_control = true
+market_score_window = 60
+market_score_threshold = 0.0
+risk_off_exposure = 0.50
+# stock_selection = true
+# stock_top_n_per_industry = 5
+# stock_min_stocks_per_industry = 3
+# stock_max_weight = 0.05
+
+[factors]
+ret20_weight = 0.40
+ret60_weight = 0.40
+ret120_weight = 0.20
+amount_strength_weight = 0.25
+breadth20_weight = 0.12
+breadth60_weight = 0.08
+vol20_weight = -0.30
+ret5_weight = -0.20
+# stock_ret20_weight = 0.45
+# stock_ret60_weight = 0.25
+# stock_amount_strength_weight = 0.10
+# stock_vol20_weight = -0.20
+# stock_ret5_weight = -0.10
+
+[reports]
+output_dir = "../reports/real"

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-rotation"
+version = "0.1.0"
+description = "A-share industry momentum rotation research framework"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Quant Research" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+real-data = [
+  "akshare>=1.18.0",
+]
+
+[project.scripts]
+quant-rotation = "quant_rotation.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

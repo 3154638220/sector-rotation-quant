@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+from .factors import simple_return, trailing_mean, trailing_volatility, zscore
+from .models import PriceData, StockSelectionConfig
+from .portfolio import select_top_k
+
+
+def stocks_by_industry(
+    stock_industry_map: dict[str, str],
+    available_stocks: list[str],
+) -> dict[str, list[str]]:
+    available = set(available_stocks)
+    grouped: dict[str, list[str]] = {}
+    for stock, industry in stock_industry_map.items():
+        if stock not in available:
+            continue
+        grouped.setdefault(industry, []).append(stock)
+    return {industry: sorted(stocks) for industry, stocks in grouped.items()}
+
+
+def compute_stock_scores(
+    stock_data: PriceData,
+    index: int,
+    candidates: list[str],
+    config: StockSelectionConfig,
+    stock_amount_data: PriceData | None = None,
+) -> dict[str, float]:
+    if not candidates:
+        return {}
+    if index < 60:
+        raise ValueError("At least 60 observations are required for stock scoring")
+    if stock_amount_data is not None:
+        if stock_amount_data.dates != stock_data.dates:
+            raise ValueError("stock_amount_data dates must match stock data dates")
+        if stock_amount_data.assets != stock_data.assets:
+            raise ValueError("stock_amount_data assets must match stock data assets")
+
+    ret20: dict[str, float] = {}
+    ret60: dict[str, float] = {}
+    amount_strength: dict[str, float] = {}
+    vol20: dict[str, float] = {}
+    ret5: dict[str, float] = {}
+
+    for stock in candidates:
+        closes = stock_data.closes[stock]
+        ret20[stock] = simple_return(closes, index, 20)
+        ret60[stock] = simple_return(closes, index, 60)
+        vol20[stock] = trailing_volatility(closes, index, 20)
+        ret5[stock] = simple_return(closes, index, 5)
+        if stock_amount_data is not None:
+            amounts = stock_amount_data.closes[stock]
+            amount_ma60 = trailing_mean(amounts, index, 60)
+            if amount_ma60 <= 0:
+                raise ValueError("Stock amount values must have a positive 60-day mean")
+            amount_strength[stock] = trailing_mean(amounts, index, 20) / amount_ma60
+
+    z_ret20 = zscore(ret20)
+    z_ret60 = zscore(ret60)
+    z_amount_strength = zscore(amount_strength)
+    z_vol20 = zscore(vol20)
+    z_ret5 = zscore(ret5)
+
+    return {
+        stock: (
+            config.ret20 * z_ret20[stock]
+            + config.ret60 * z_ret60[stock]
+            + config.amount_strength * z_amount_strength.get(stock, 0.0)
+            + config.vol20 * z_vol20[stock]
+            + config.ret5 * z_ret5[stock]
+        )
+        for stock in candidates
+    }
+
+
+def stock_target_weights(
+    industry_weights: dict[str, float],
+    stock_data: PriceData,
+    stock_industry_map: dict[str, str],
+    index: int,
+    config: StockSelectionConfig,
+    stock_amount_data: PriceData | None = None,
+) -> dict[str, float]:
+    if config.top_n_per_industry <= 0:
+        raise ValueError("stock_top_n_per_industry must be positive")
+    if config.min_stocks_per_industry <= 0:
+        raise ValueError("stock_min_stocks_per_industry must be positive")
+    if config.max_stock_weight <= 0:
+        raise ValueError("stock_max_weight must be positive")
+
+    grouped = stocks_by_industry(stock_industry_map, stock_data.assets)
+    target: dict[str, float] = {}
+    for industry, industry_weight in industry_weights.items():
+        candidates = grouped.get(industry, [])
+        if len(candidates) < config.min_stocks_per_industry:
+            continue
+        scores = compute_stock_scores(
+            stock_data,
+            index,
+            candidates,
+            config,
+            stock_amount_data=stock_amount_data,
+        )
+        selected = select_top_k(scores, min(config.top_n_per_industry, len(scores)))
+        if not selected:
+            continue
+        per_stock = min(industry_weight / len(selected), config.max_stock_weight)
+        for stock in selected:
+            target[stock] = per_stock
+    return target

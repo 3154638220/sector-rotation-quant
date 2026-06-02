@@ -1,0 +1,15 @@
+{
+  "provider": "akshare",
+  "industry_source": "sw_level1_index",
+  "benchmark_symbol": "sh000300",
+  "start": "2021-12-13",
+  "end": "2026-06-02",
+  "rows": 1074,
+  "industries": 31,
+  "generated_at": "2026-06-02T18:17:29",
+  "files": {
+    "industry_close": "industry_close.csv",
+    "industry_amount": "industry_amount.csv",
+    "benchmark_close": "benchmark_close.csv"
+  }
+}
