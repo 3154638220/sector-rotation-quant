@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+from .metrics import annual_returns
 from .models import BacktestResult
 
 
@@ -81,8 +82,45 @@ def _write_rebalances(result: BacktestResult, path: Path) -> None:
 
 
 def _write_annual_returns(result: BacktestResult, path: Path) -> None:
+    benchmark_returns = (
+        annual_returns(result.dates, result.benchmark_equity)
+        if result.benchmark_equity is not None
+        else {}
+    )
+    equal_weight_returns = annual_returns(result.dates, result.equal_weight_equity)
+    years = sorted(
+        set(result.annual_returns)
+        | set(benchmark_returns)
+        | set(equal_weight_returns)
+    )
+
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["year", "strategy_return"])
-        for year, value in sorted(result.annual_returns.items()):
-            writer.writerow([year, f"{value:.10f}"])
+        writer.writerow(
+            [
+                "year",
+                "strategy_return",
+                "benchmark_return",
+                "industry_equal_weight_return",
+                "excess_vs_benchmark",
+                "excess_vs_equal_weight",
+            ]
+        )
+        for year in years:
+            strategy_value = result.annual_returns.get(year)
+            benchmark_value = benchmark_returns.get(year)
+            equal_weight_value = equal_weight_returns.get(year)
+            writer.writerow(
+                [
+                    year,
+                    "" if strategy_value is None else f"{strategy_value:.10f}",
+                    "" if benchmark_value is None else f"{benchmark_value:.10f}",
+                    "" if equal_weight_value is None else f"{equal_weight_value:.10f}",
+                    ""
+                    if strategy_value is None or benchmark_value is None
+                    else f"{strategy_value - benchmark_value:.10f}",
+                    ""
+                    if strategy_value is None or equal_weight_value is None
+                    else f"{strategy_value - equal_weight_value:.10f}",
+                ]
+            )

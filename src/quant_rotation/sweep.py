@@ -9,9 +9,14 @@ from .decomposition import FACTOR_FIELDS, METRIC_ORDER
 from .models import BacktestResult, BreadthData, FactorWeights, PriceData, StrategyConfig
 
 
-DEFAULT_FACTOR_SET_NAMES = ("ret60", "ret60_ret5")
-DEFAULT_TOP_K_VALUES = (5,)
-DEFAULT_RISK_OFF_EXPOSURES = (0.0, 0.3, 0.5)
+DEFAULT_FACTOR_SET_NAMES = (
+    "ret60",
+    "ret60_ret5",
+    "ret60_ret120",
+    "ret60_ret120_ret5",
+)
+DEFAULT_TOP_K_VALUES = (3, 5, 8)
+DEFAULT_RISK_OFF_EXPOSURES = (0.0, 0.2, 0.3, 0.5)
 DEFAULT_RISK_CONTROL_VALUES = (False, True)
 DEFAULT_MARKET_SCORE_CONTROL_VALUES = (False, True)
 
@@ -137,6 +142,16 @@ def _candidate_factor_sets(
             {"ret60": 1.0, "ret120": 0.5, "ret5": -0.5},
         ),
         (
+            "ret60_breadth20",
+            "60-day momentum with industry breadth",
+            {"ret60": 1.0, "breadth20": 0.15},
+        ),
+        (
+            "ret60_ret5_breadth20",
+            "60-day momentum, 5-day overheating penalty, and industry breadth",
+            {"ret60": 1.0, "ret5": -0.5, "breadth20": 0.15},
+        ),
+        (
             "price_momentum",
             "20/60/120-day industry momentum",
             {"ret20": 1.0, "ret60": 1.0, "ret120": 0.5},
@@ -144,7 +159,7 @@ def _candidate_factor_sets(
     ]
     for name, description, values in raw_candidates:
         fields = _active_fields(tuple(values), amount_data, breadth_data)
-        if not fields:
+        if len(fields) != len(values):
             continue
         available_values = {field: values[field] for field in fields}
         candidates.append((name, description, fields, _factor_weights(available_values)))

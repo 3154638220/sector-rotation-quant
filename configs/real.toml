@@ -30,14 +30,14 @@ risk_off_exposure = 0.50
 # stock_max_weight = 0.05
 
 [factors]
-ret20_weight = 0.40
-ret60_weight = 0.40
-ret120_weight = 0.20
-amount_strength_weight = 0.25
-breadth20_weight = 0.12
-breadth60_weight = 0.08
-vol20_weight = -0.30
-ret5_weight = -0.20
+ret20_weight = 0.00
+ret60_weight = 1.00
+ret120_weight = 0.00
+amount_strength_weight = 0.00
+breadth20_weight = 0.00
+breadth60_weight = 0.00
+vol20_weight = 0.00
+ret5_weight = -0.50
 # stock_ret20_weight = 0.45
 # stock_ret60_weight = 0.25
 # stock_amount_strength_weight = 0.10

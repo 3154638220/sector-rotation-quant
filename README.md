@@ -21,17 +21,49 @@ industry close prices plus a benchmark close series:
 
 ## Quick Start
 
-Generate deterministic sample data:
+Install real-data support and fetch the current real-data set:
+
+```powershell
+python -m pip install -e .[real-data]
+$env:PYTHONPATH="src"
+python -m quant_rotation fetch-real-data `
+  --output data/real `
+  --start 2021-01-01 `
+  --end 2026-06-02 `
+  --benchmark sh000300 `
+  --request-interval 0.2
+```
+
+This writes:
+
+- `data/real/industry_close.csv`
+- `data/real/industry_amount.csv` when AKShare returns amount or volume fields
+- `data/real/benchmark_close.csv`
+- `data/real/manifest.json`
+
+Run the production candidate:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m quant_rotation run --config configs/production.toml
+```
+
+Production reports are written to `reports/production/`:
+
+- `metrics.csv`
+- `equity_curve.csv`
+- `rebalances.csv`
+- `annual_returns.csv`
+
+The production config currently uses the simplified `ret60 + ret5` industry
+model: 60-day industry momentum, 5-day overheating penalty, Top 5 industries,
+and zero exposure when market risk controls are off.
+
+For a deterministic sample-data smoke test:
 
 ```powershell
 $env:PYTHONPATH="src"
 python -m quant_rotation sample-data --output data/sample --days 520
-```
-
-Run a backtest:
-
-```powershell
-$env:PYTHONPATH="src"
 python -m quant_rotation run --config configs/default.toml
 ```
 
@@ -39,14 +71,14 @@ Run factor decomposition backtests:
 
 ```powershell
 $env:PYTHONPATH="src"
-python -m quant_rotation decompose --config configs/default.toml --industry-only
+python -m quant_rotation decompose --config configs/production.toml --industry-only
 ```
 
 Run a parameter sweep around candidate factor models:
 
 ```powershell
 $env:PYTHONPATH="src"
-python -m quant_rotation sweep --config configs/real.toml --industry-only
+python -m quant_rotation sweep --config configs/production.toml --industry-only
 ```
 
 Run train/test validation:
@@ -54,7 +86,7 @@ Run train/test validation:
 ```powershell
 $env:PYTHONPATH="src"
 python -m quant_rotation validate `
-  --config configs/real.toml `
+  --config configs/production.toml `
   --industry-only `
   --train-end 2024-12-31 `
   --test-start 2025-01-01
@@ -65,7 +97,7 @@ Run rolling walk-forward multi-fold validation:
 ```powershell
 $env:PYTHONPATH="src"
 python -m quant_rotation validate `
-  --config configs/real.toml `
+  --config configs/production.toml `
   --industry-only `
   --walk-forward `
   --train-window 504 `
@@ -124,15 +156,18 @@ walk-forward conclusions as provisional while the effective history only
 contains a small number of folds; prefer fetching and validating the longest
 reliable historical range before considering any candidate a finalized strategy.
 
-Fetch real A-share industry index data with AKShare:
+To extend the real-data history for more reliable validation, fetch a longer
+dataset:
 
 ```powershell
 python -m pip install -e .[real-data]
 $env:PYTHONPATH="src"
-python -m quant_rotation fetch-real-data --output data/real --start 2021-01-01 --end 2026-06-02
-python -m quant_rotation run --config configs/real.toml
-python -m quant_rotation run --config configs/real_ret60.toml
-python -m quant_rotation run --config configs/real_ret60_ret5_riskoff0.toml
+python -m quant_rotation fetch-real-data `
+  --output data/real_extended `
+  --start 2010-01-04 `
+  --end 2026-06-02 `
+  --benchmark sh000300 `
+  --request-interval 0.2
 ```
 
 Run tests:

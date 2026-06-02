@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from datetime import date
-from statistics import mean, median
+from statistics import mean, median, pstdev
 from pathlib import Path
 
 from .metrics import annual_returns, summarize_performance
@@ -20,6 +20,8 @@ from .sweep import (
 
 
 DEFAULT_SELECTION_METRIC = "composite"
+SHARPE_PLUS_CALMAR_SELECTION_METRIC = "sharpe_plus_calmar"
+COMPOSITE_TURNOVER_PENALTY = 0.25
 COMPOSITE_SELECTION_FIELDS = (
     "excess_return_vs_equal_weight",
     "calmar_ratio",
@@ -252,9 +254,12 @@ def selection_score(
             metrics["excess_return_vs_equal_weight"]
             + metrics["calmar_ratio"]
             + metrics["sharpe_ratio"]
-            - metrics["average_turnover"]
+            - COMPOSITE_TURNOVER_PENALTY * metrics["average_turnover"]
             - abs(metrics["max_drawdown"])
         )
+
+    if selection_metric == SHARPE_PLUS_CALMAR_SELECTION_METRIC:
+        return metrics["sharpe_ratio"] + metrics["calmar_ratio"]
 
     if selection_metric not in metrics:
         raise ValueError(f"Unknown selection metric: {selection_metric}")
@@ -1075,9 +1080,11 @@ def _write_walk_forward_summary(
             if test_values:
                 writer.writerow(["test_mean", metric, f"{mean(test_values):.10f}"])
                 writer.writerow(["test_median", metric, f"{median(test_values):.10f}"])
+                writer.writerow(["test_std", metric, f"{pstdev(test_values):.10f}"])
             if train_values:
                 writer.writerow(["train_mean", metric, f"{mean(train_values):.10f}"])
                 writer.writerow(["train_median", metric, f"{median(train_values):.10f}"])
+                writer.writerow(["train_std", metric, f"{pstdev(train_values):.10f}"])
         for name, count in sorted(
             selection_counts.items(),
             key=lambda item: (-item[1], item[0]),

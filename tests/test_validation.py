@@ -74,9 +74,11 @@ class TrainTestValidationTests(unittest.TestCase):
             )
             write_train_test_validation_reports(runs, report_dir)
             selected = selected_by_train(runs)
+            selected_by_sharpe_calmar = selected_by_train(runs, "sharpe_plus_calmar")
 
             self.assertGreater(len(runs), 0)
             self.assertIsNotNone(selected.train_metrics["annualized_return"])
+            self.assertIsNotNone(selected_by_sharpe_calmar.train_metrics["sharpe_ratio"])
             self.assertTrue((report_dir / "train_test_validation.csv").exists())
             self.assertTrue((report_dir / "train_test_selected_equity.csv").exists())
             self.assertTrue((report_dir / "train_test_annual_returns.csv").exists())
@@ -135,6 +137,7 @@ class TrainTestValidationTests(unittest.TestCase):
             self.assertIn("train_selection_score", candidates_header)
             self.assertIn("risk_control", candidates_header)
             self.assertIn("selected_name", equity_header)
+            self.assertIn("test_std,sharpe_ratio", summary_text)
             oos_header = (report_dir / "walk_forward_oos_equity.csv").read_text(
                 encoding="utf-8"
             ).splitlines()[0]

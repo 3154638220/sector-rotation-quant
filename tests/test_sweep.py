@@ -15,7 +15,7 @@ from quant_rotation.sweep import (
 
 
 class ParameterSweepTests(unittest.TestCase):
-    def test_build_parameter_sweep_specs_uses_narrow_default_candidates(self) -> None:
+    def test_build_parameter_sweep_specs_uses_expanded_default_candidates(self) -> None:
         specs = build_parameter_sweep_specs(
             StrategyConfig(),
             risk_off_exposures=(0.0, 0.5),
@@ -24,15 +24,19 @@ class ParameterSweepTests(unittest.TestCase):
 
         self.assertIn("ret60_top5_riskoff0_riskctrl0_mscore0", names)
         self.assertIn("ret60_ret5_top5_riskoff0p5_riskctrl1_mscore1", names)
-        self.assertEqual({spec.factor_set for spec in specs}, {"ret60", "ret60_ret5"})
-        self.assertEqual({spec.top_k for spec in specs}, {5})
+        self.assertEqual(
+            {spec.factor_set for spec in specs},
+            {"ret60", "ret60_ret5", "ret60_ret120", "ret60_ret120_ret5"},
+        )
+        self.assertEqual({spec.top_k for spec in specs}, {3, 5, 8})
         self.assertEqual({spec.risk_control for spec in specs}, {False, True})
         self.assertEqual(
             {spec.market_score_control for spec in specs},
             {False, True},
         )
-        self.assertFalse(any("top3" in name for name in names))
+        self.assertTrue(any("top3" in name for name in names))
         self.assertFalse(any(name.startswith("all_factors") for name in names))
+        self.assertFalse(any("breadth20" in name for name in names))
         self.assertEqual(
             len(specs),
             len({spec.name for spec in specs}),

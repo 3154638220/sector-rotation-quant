@@ -21,6 +21,12 @@ from .real_data import fetch_and_write_real_data, parse_date
 from .reports import write_reports
 from .sample_data import generate_sample_data
 from .sweep import run_parameter_sweep, write_parameter_sweep_reports
+from .sweep import (
+    DEFAULT_FACTOR_SET_NAMES,
+    DEFAULT_RISK_CONTROL_VALUES,
+    DEFAULT_RISK_OFF_EXPOSURES,
+    DEFAULT_TOP_K_VALUES,
+)
 from .validation import (
     DEFAULT_SELECTION_METRIC,
     run_walk_forward_validation,
@@ -115,22 +121,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sweep.add_argument(
         "--top-k",
-        default="5",
+        default=",".join(str(value) for value in DEFAULT_TOP_K_VALUES),
         help="Comma-separated top_k values, e.g. 5",
     )
     sweep.add_argument(
         "--factor-set",
-        default="ret60,ret60_ret5",
+        default=",".join(DEFAULT_FACTOR_SET_NAMES),
         help="Comma-separated factor sets, e.g. ret60,ret60_ret5",
     )
     sweep.add_argument(
         "--risk-off-exposure",
-        default="0,0.3,0.5",
+        default=",".join(str(value) for value in DEFAULT_RISK_OFF_EXPOSURES),
         help="Comma-separated risk-off exposure values, e.g. 0,0.3,0.5",
     )
     sweep.add_argument(
         "--risk-control",
-        default="false,true",
+        default=",".join("true" if value else "false" for value in DEFAULT_RISK_CONTROL_VALUES),
         help="Comma-separated risk_control values, e.g. false,true",
     )
     sweep.add_argument(
@@ -169,22 +175,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate.add_argument(
         "--top-k",
-        default="5",
+        default=",".join(str(value) for value in DEFAULT_TOP_K_VALUES),
         help="Comma-separated top_k values, e.g. 5",
     )
     validate.add_argument(
         "--factor-set",
-        default="ret60,ret60_ret5",
+        default=",".join(DEFAULT_FACTOR_SET_NAMES),
         help="Comma-separated factor sets, e.g. ret60,ret60_ret5",
     )
     validate.add_argument(
         "--risk-off-exposure",
-        default="0,0.3,0.5",
+        default=",".join(str(value) for value in DEFAULT_RISK_OFF_EXPOSURES),
         help="Comma-separated risk-off exposure values, e.g. 0,0.3,0.5",
     )
     validate.add_argument(
         "--risk-control",
-        default="false,true",
+        default=",".join("true" if value else "false" for value in DEFAULT_RISK_CONTROL_VALUES),
         help="Comma-separated risk_control values, e.g. false,true",
     )
     validate.add_argument(
