@@ -115,8 +115,12 @@ class TrainTestValidationTests(unittest.TestCase):
             self.assertTrue((report_dir / "walk_forward_folds.csv").exists())
             self.assertTrue((report_dir / "walk_forward_selected_equity.csv").exists())
             self.assertTrue((report_dir / "walk_forward_oos_equity.csv").exists())
+            self.assertTrue((report_dir / "fixed_candidate_summary.csv").exists())
             self.assertTrue((report_dir / "walk_forward_summary.csv").exists())
 
+            candidates_header = (report_dir / "walk_forward_candidates.csv").read_text(
+                encoding="utf-8"
+            ).splitlines()[0]
             folds_header = (report_dir / "walk_forward_folds.csv").read_text(
                 encoding="utf-8"
             ).splitlines()[0]
@@ -127,11 +131,18 @@ class TrainTestValidationTests(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn("test_annualized_return", folds_header)
+            self.assertIn("selection_metric", candidates_header)
+            self.assertIn("train_selection_score", candidates_header)
+            self.assertIn("risk_control", candidates_header)
             self.assertIn("selected_name", equity_header)
             oos_header = (report_dir / "walk_forward_oos_equity.csv").read_text(
                 encoding="utf-8"
             ).splitlines()[0]
             self.assertIn("selected_name", oos_header)
+            fixed_header = (report_dir / "fixed_candidate_summary.csv").read_text(
+                encoding="utf-8"
+            ).splitlines()[0]
+            self.assertIn("oos_final_equity", fixed_header)
             self.assertIn("selection_count", summary_text)
 
 

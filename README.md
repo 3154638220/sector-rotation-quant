@@ -69,7 +69,8 @@ python -m quant_rotation validate `
   --industry-only `
   --walk-forward `
   --train-window 504 `
-  --test-window 126
+  --test-window 126 `
+  --selection-metric composite
 ```
 
 The decomposition command keeps rebalance rules, transaction cost, and risk
@@ -82,8 +83,11 @@ each factor's marginal contribution inside the configured full model. It writes:
 - `factor_equity_curves.csv`
 - `factor_annual_returns.csv`
 
-The sweep command compares candidate factor sets such as `ret60`,
-`ret60_ret5`, and `ret60_ret120` across `top_k` and `risk_off_exposure` values.
+The sweep command defaults to the current narrow candidate set:
+`ret60` and `ret60_ret5`, `top_k=5`, `risk_off_exposure=0,0.3,0.5`,
+and both `risk_control=true/false` plus `market_score_control=true/false`
+when a benchmark or market data is available. Use `--factor-set`, `--top-k`,
+`--risk-control`, and `--market-score-control` to widen or narrow that space.
 It writes:
 
 - `parameter_sweep.csv`
@@ -92,6 +96,10 @@ It writes:
 
 The validation command runs the same candidate set, ranks candidates on the
 train segment, and reports the selected candidate's test-segment performance.
+By default it selects with `--selection-metric composite`, computed as
+train excess return versus equal weight plus Calmar plus Sharpe, less turnover
+and absolute drawdown penalties. Pass `--selection-metric annualized_return` to
+reproduce the older train-return ranking.
 It writes:
 
 - `train_test_validation.csv`
@@ -106,7 +114,15 @@ out-of-sample test fold. It writes:
 - `walk_forward_folds.csv`
 - `walk_forward_selected_equity.csv`
 - `walk_forward_oos_equity.csv`
+- `fixed_candidate_summary.csv`
 - `walk_forward_summary.csv`
+
+`fixed_candidate_summary.csv` ignores dynamic train-fold selection and instead
+chains each fixed candidate's OOS fold equity across the whole walk-forward
+period, then ranks candidates by the chained final equity. Treat all real-data
+walk-forward conclusions as provisional while the effective history only
+contains a small number of folds; prefer fetching and validating the longest
+reliable historical range before considering any candidate a finalized strategy.
 
 Fetch real A-share industry index data with AKShare:
 
