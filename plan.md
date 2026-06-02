@@ -5,6 +5,38 @@
 
 ---
 
+## 零、执行进度更新（2026-06-02）
+
+### 0.1 已完成
+
+| 编号 | 事项 | 结果 |
+|------|------|------|
+| A1 | 新增生产配置 `configs/production.toml` | ✅ 已完成。配置为 `ret60 + ret5`、Top 5、`risk_off_exposure = 0.00`，报告输出到 `reports/production` |
+| A2 | 更新 README 推荐命令流程 | ✅ 已完成。Quick Start 已改为真实数据优先，sample 数据作为 smoke test |
+| A3 | 在 `configs/real.toml` 中关闭拖累因子 | ✅ 已完成。`ret20 / ret120 / amount_strength / breadth / vol20` 均显式置零，保留 `ret60_weight = 1.00` 与 `ret5_weight = -0.50` |
+| B1 | 尝试扩充历史数据至 2010 年 | ⚠️ 已执行但受数据源限制。`fetch-real-data --start 2010-01-04` 成功写入 `data/real_extended`，但 AKShare 当前 `index_hist_sw` 实际只返回 `2021-12-13` 至 `2026-06-02` 的共同日期 |
+| B4 | 改进 walk-forward 候选选择指标 | ✅ 已完成。新增 `sharpe_plus_calmar` 选择指标，并降低 composite 中换手率惩罚 |
+| D1 | 扩大参数扫描候选集 | ✅ 已完成。默认覆盖 `ret60`、`ret60_ret5`、`ret60_ret120`、`ret60_ret120_ret5`，`top_k=(3,5,8)`，`risk_off=(0.0,0.2,0.3,0.5)` |
+| D3 | 添加分年度超额报告 | ✅ 已完成。`annual_returns.csv` 已包含 `benchmark_return`、`industry_equal_weight_return`、`excess_vs_benchmark`、`excess_vs_equal_weight` |
+
+### 0.2 验证结果
+
+| 验证项 | 命令 / 输出 | 结果 |
+|------|-------------|------|
+| 单元测试 | `python -m unittest discover -s tests` | ✅ 21 个测试全部通过 |
+| 生产配置回测 | `python -m quant_rotation run --config configs/production.toml` | 年化收益 **6.51%**，最大回撤 **-17.26%**，Sharpe **0.52**，最终净值 **1.3079** |
+| 修改后 `real.toml` 回测 | `python -m quant_rotation run --config configs/real.toml` | 年化收益 **4.90%**，最大回撤 **-22.78%**，Sharpe **0.38**；由于仍保留 `risk_off_exposure = 0.50`，弱于 production |
+| 扩展候选 sweep | `python -m quant_rotation sweep --config configs/production.toml --industry-only` | ✅ 192 个候选跑通；最佳为 `ret60_ret5_top5_riskoff0_riskctrl1_mscore0` |
+| walk-forward | `python -m quant_rotation validate --config configs/production.toml --industry-only --walk-forward --selection-metric sharpe_plus_calmar` | ✅ 4 折跑通；`walk_forward_summary.csv` 已输出测试 Sharpe 的 mean / median / std |
+
+### 0.3 当前阻塞与下一步
+
+- **历史数据扩展仍是最大阻塞**：本地 AKShare 没有可直接使用的 `sw_index_daily` 函数；`index_analysis_daily_sw` 当前抛出 `KeyError '发布日期'`，暂不能无痛替代。需要寻找新的稳定数据源或修补 AKShare 对申万历史日线接口的适配。
+- **多指数 `market_close.csv` 尚未完成**：下一步应新增沪深300、中证全指、创业板指三列宽表，并在生产候选之外做阈值校准。
+- **Phase 3 广度数据仍未进入生产**：`production.toml` 中 breadth 权重保持 `0.00`，等待成分股历史快照与 breadth 数据管道完成后再增量验证。
+
+---
+
 ## 一、现状总结（项目已完成的工作）
 
 ### 1.1 已实现的阶段
@@ -312,18 +344,18 @@ prosperity_i = 0.5 * 行业近期成交额增速 + 0.5 * 行业内盈利修正�
 
 ## 四、优先级总览
 
-| 优先级 | 任务 | 预期收益 |
-|--------|------|----------|
-| 🔴 P0 | **提交 production.toml**（关闭 ret20/amount_strength）| 立即改善全因子配置性能 |
-| 🔴 P0 | **扩充历史数据至 2010 年**（阶段 B1）| 解决验证不稳定的根本问题 |
-| 🟠 P1 | 多指数 market_close.csv（阶段 B2）| 改善市场环境判断准确性 |
-| 🟠 P1 | 重校 market_score_threshold（阶段 B3）| 提升月胜率 |
-| 🟠 P1 | 扩大参数扫描候选集（阶段 D1）| 更全面的候选覆盖 |
-| 🟡 P2 | 广度数据管道 fetch-breadth-data（阶段 C1）| 验证 Phase 3 有效性 |
-| 🟡 P2 | 改进 walk-forward 选择指标（阶段 B4）| 降低验证噪声 |
-| 🟡 P2 | 分年度超额等详细报告（阶段 D3）| 更清晰的策略诊断 |
-| 🟢 P3 | Phase 5 个股选择基础设施（阶段 E）| 从行业到股票的完整策略 |
-| 🟢 P3 | 估值/景气度因子（阶段 F）| 在当前动量框架上叠加 |
+| 优先级 | 任务 | 当前进度 | 预期收益 |
+|--------|------|----------|----------|
+| 🔴 P0 | **提交 production.toml**（关闭 ret20/amount_strength）| ✅ 已完成 | 立即改善全因子配置性能 |
+| 🔴 P0 | **扩充历史数据至 2010 年**（阶段 B1）| ⚠️ 已尝试，AKShare 当前仅返回 2021-12-13 以来共同日期 | 解决验证不稳定的根本问题 |
+| 🟠 P1 | 多指数 market_close.csv（阶段 B2）| ⏳ 未开始 | 改善市场环境判断准确性 |
+| 🟠 P1 | 重校 market_score_threshold（阶段 B3）| ⏳ 依赖扩展数据或多指数数据 | 提升月胜率 |
+| 🟠 P1 | 扩大参数扫描候选集（阶段 D1）| ✅ 已完成 | 更全面的候选覆盖 |
+| 🟡 P2 | 广度数据管道 fetch-breadth-data（阶段 C1）| ⏳ 未开始 | 验证 Phase 3 有效性 |
+| 🟡 P2 | 改进 walk-forward 选择指标（阶段 B4）| ✅ 已完成 | 降低验证噪声 |
+| 🟡 P2 | 分年度超额等详细报告（阶段 D3）| ✅ 已完成 | 更清晰的策略诊断 |
+| 🟢 P3 | Phase 5 个股选择基础设施（阶段 E）| ⏳ 未开始 | 从行业到股票的完整策略 |
+| 🟢 P3 | 估值/景气度因子（阶段 F）| ⏳ 未开始 | 在当前动量框架上叠加 |
 
 ---
 
