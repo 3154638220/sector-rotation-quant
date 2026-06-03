@@ -390,7 +390,7 @@ def build_parameter_sweep_specs(
                                         market_score_control=market_score_control,
                                         market_score_threshold=threshold,
                                     )
-                                    specs.append(spec)
+                                specs.append(spec)
     if not specs:
         raise ValueError("No parameter sweep candidates were generated")
 

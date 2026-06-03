@@ -33,9 +33,7 @@ def classify_market_state(
     signal_index: int,
     ma_window: int,
 ) -> str:
-    if signal_index < ma_window:
-        return "bull"
-    if benchmark_closes is not None:
+    if benchmark_closes is not None and signal_index >= ma_window:
         moving_average = sum(
             benchmark_closes[signal_index - ma_window + 1 : signal_index + 1]
         ) / ma_window

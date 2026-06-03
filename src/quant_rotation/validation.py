@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import random
 from dataclasses import dataclass
 from datetime import date
 from statistics import mean, median, pstdev, stdev
@@ -74,6 +75,37 @@ class WalkForwardValidationFold:
     fold: int
     split: TrainTestSplit
     runs: list[TrainTestValidationRun]
+
+
+def bootstrap_oos_ci(
+    fold_annualized_returns: list[float],
+    n_bootstrap: int = 10_000,
+    seed: int = 42,
+) -> dict[str, float]:
+    if not fold_annualized_returns:
+        raise ValueError("bootstrap_oos_ci requires at least one return")
+    if n_bootstrap <= 0:
+        raise ValueError("n_bootstrap must be positive")
+
+    rng = random.Random(seed)
+    sample_size = len(fold_annualized_returns)
+    samples: list[float] = []
+    for _ in range(n_bootstrap):
+        sample_mean = sum(
+            rng.choice(fold_annualized_returns)
+            for _ in range(sample_size)
+        ) / sample_size
+        samples.append(sample_mean)
+    samples.sort()
+
+    lower_index = min(int(0.025 * n_bootstrap), n_bootstrap - 1)
+    upper_index = min(int(0.975 * n_bootstrap), n_bootstrap - 1)
+    return {
+        "mean": mean(fold_annualized_returns),
+        "ci_lower": samples[lower_index],
+        "ci_upper": samples[upper_index],
+        "p_positive": sum(1 for sample in samples if sample > 0.0) / n_bootstrap,
+    }
 
 
 def _last_index_on_or_before(dates: list[date], target: date) -> int:
@@ -1226,6 +1258,29 @@ def _write_walk_forward_summary(
                 writer.writerow(["test_mean", metric, f"{mean(test_values):.10f}"])
                 writer.writerow(["test_median", metric, f"{median(test_values):.10f}"])
                 writer.writerow(["test_std", metric, f"{pstdev(test_values):.10f}"])
+                if metric == "annualized_return":
+                    bootstrap = bootstrap_oos_ci(test_values)
+                    writer.writerow(
+                        [
+                            "bootstrap_ci_lower",
+                            metric,
+                            f"{bootstrap['ci_lower']:.10f}",
+                        ]
+                    )
+                    writer.writerow(
+                        [
+                            "bootstrap_ci_upper",
+                            metric,
+                            f"{bootstrap['ci_upper']:.10f}",
+                        ]
+                    )
+                    writer.writerow(
+                        [
+                            "bootstrap_p_positive",
+                            metric,
+                            f"{bootstrap['p_positive']:.10f}",
+                        ]
+                    )
             if train_values:
                 writer.writerow(["train_mean", metric, f"{mean(train_values):.10f}"])
                 writer.writerow(["train_median", metric, f"{median(train_values):.10f}"])

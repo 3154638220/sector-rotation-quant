@@ -103,6 +103,36 @@ class ParameterSweepTests(unittest.TestCase):
         self.assertTrue(any("_mthrneg0p05" in spec.name for spec in specs))
         self.assertTrue(any("_mthr0p02" in spec.name for spec in specs))
 
+    def test_risk_control_mode_grid_includes_soft_candidates(self) -> None:
+        specs = build_parameter_sweep_specs(
+            StrategyConfig(),
+            factor_set_names=("ret60",),
+            top_k_values=(5,),
+            risk_off_exposures=(0.0, 0.5),
+            risk_control_values=(True,),
+            market_score_control_values=(True,),
+            risk_control_mode_values=("hard", "soft"),
+            soft_exposure_min_values=(0.0, 0.1, 0.2),
+        )
+
+        self.assertEqual(len(specs), 5)
+        self.assertEqual(
+            sum(1 for spec in specs if spec.risk_control_mode == "hard"),
+            2,
+        )
+        self.assertEqual(
+            sum(1 for spec in specs if spec.risk_control_mode == "soft"),
+            3,
+        )
+        self.assertEqual(
+            {spec.soft_exposure_min for spec in specs if spec.risk_control_mode == "soft"},
+            {0.0, 0.1, 0.2},
+        )
+        self.assertIn(
+            "ret60_top5_softoff0p2_modes",
+            {spec.name for spec in specs},
+        )
+
     def test_fundamental_factor_sets_are_available_with_data(self) -> None:
         dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(130)]
         closes = {

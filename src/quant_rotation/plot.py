@@ -139,6 +139,7 @@ def write_html_report(
     benchmarks_curve_path: str | Path | None = None,
     annual_returns: dict[int, float] | None = None,
     holding_returns_path: str | Path | None = None,
+    extra_sections: str = "",
 ) -> Path:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -172,11 +173,187 @@ img {{ width: 100%; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); m
 <body>
 <h1>Strategy Report</h1>
 {sections_html}
+{extra_sections}
 </body></html>"""
 
     html_path = out / "report.html"
     html_path.write_text(html, encoding="utf-8")
     return html_path
+
+
+def _compute_drawdown_series(equity: list[float]) -> list[float]:
+    peak = equity[0]
+    result = [0.0]
+    for value in equity[1:]:
+        peak = max(peak, value)
+        result.append(value / peak - 1.0 if peak > 0 else 0.0)
+    return result
+
+
+def plot_walk_forward_folds(
+    oos_equity_csv: str | Path,
+    folds_csv: str | Path,
+) -> tuple[bytes, bytes]:
+    import pandas as pd
+
+    eq = pd.read_csv(oos_equity_csv, parse_dates=["date"])
+    folds_df = pd.read_csv(folds_csv)
+
+    folds_sorted = sorted(eq["fold"].unique())
+    cmap = plt.cm.tab20
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+    for idx, fold_id in enumerate(folds_sorted):
+        fold_eq = eq[eq["fold"] == fold_id]
+        color = cmap(idx % 20)
+        ax.plot(fold_eq["date"], fold_eq["strategy"], linewidth=0.8,
+                color=color, alpha=0.7, label=f"Fold {fold_id}")
+    ax.set_title("Walk-Forward Fold OOS Equity Curves")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Equity")
+    ax.axhline(1.0, color="black", linewidth=0.5, linestyle="--", alpha=0.3)
+    ax.grid(True, alpha=0.3)
+    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
+    fig.autofmt_xdate()
+    if len(folds_sorted) <= 20:
+        ax.legend(loc="upper left", fontsize=7, ncol=2)
+    equity_buf = io.BytesIO()
+    fig.savefig(equity_buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    returns = [float(r) for r in folds_df["test_annualized_return"].tolist()]
+    fold_labels = [f"F{int(f)}" for f in folds_df["fold"].tolist()]
+    colors_bar = ["#2ca02c" if v > 0 else "#d62728" for v in returns]
+
+    fig2, ax2 = plt.subplots(figsize=(14, 4))
+    bars = ax2.bar(fold_labels, returns, color=colors_bar, edgecolor="white")
+    ax2.axhline(0, color="black", linewidth=0.5)
+    for bar, val in zip(bars, returns):
+        y_pos = bar.get_height()
+        va = "bottom" if y_pos >= 0 else "top"
+        ax2.text(bar.get_x() + bar.get_width() / 2, y_pos,
+                 f"{val:.1%}", ha="center", va=va, fontsize=7, rotation=90)
+    pos_count = sum(1 for v in returns if v > 0)
+    ax2.set_title(f"Per-Fold OOS Annualized Return  ({pos_count}/{len(returns)} profitable)")
+    ax2.set_xlabel("Fold")
+    ax2.set_ylabel("Annualized Return")
+    ax2.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+    ax2.grid(True, alpha=0.3, axis="y")
+
+    median = sorted(returns)[len(returns) // 2]
+    mean_v = sum(returns) / len(returns)
+    ax2.axhline(median, color="#9467bd", linewidth=1, linestyle="--",
+                label=f"Median {median:.1%}")
+    ax2.axhline(mean_v, color="#ff7f0e", linewidth=1, linestyle="--",
+                label=f"Mean {mean_v:.1%}")
+    ax2.legend(loc="upper left", fontsize=8)
+    bar_buf = io.BytesIO()
+    fig2.savefig(bar_buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig2)
+
+    return equity_buf.getvalue(), bar_buf.getvalue()
+
+
+def plot_risk_control_accuracy(
+    accuracy_csv: str | Path,
+) -> bytes:
+    import pandas as pd
+    df = pd.read_csv(accuracy_csv, parse_dates=["signal_date"])
+    df["year"] = df["signal_date"].dt.year
+
+    years = sorted(df["year"].unique())
+    tp_counts = []
+    fp_counts = []
+    neutral_counts = []
+    hit_rates = []
+    for y in years:
+        ydf = df[df["year"] == y]
+        tp = (ydf["result"] == "TRUE_POSITIVE").sum()
+        fp = (ydf["result"] == "FALSE_POSITIVE").sum()
+        ne = (ydf["result"] == "NEUTRAL").sum()
+        total = tp + fp + ne
+        tp_counts.append(tp)
+        fp_counts.append(fp)
+        neutral_counts.append(ne)
+        hit_rates.append(tp / (tp + fp) if (tp + fp) > 0 else float("nan"))
+
+    fig, ax1 = plt.subplots(figsize=(12, 5))
+    x = range(len(years))
+    width = 0.5
+    ax1.bar(x, tp_counts, width, label="True Positive", color="#2ca02c", edgecolor="white")
+    ax1.bar(x, fp_counts, width, bottom=tp_counts, label="False Positive",
+            color="#d62728", edgecolor="white")
+    neutral_bottom = [tp + fp for tp, fp in zip(tp_counts, fp_counts)]
+    ax1.bar(x, neutral_counts, width, bottom=neutral_bottom, label="Neutral",
+            color="#7f7f7f", edgecolor="white")
+
+    ax1.set_xlabel("Year")
+    ax1.set_ylabel("Count")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([str(y) for y in years])
+    ax1.set_title("Risk Control Accuracy by Year")
+    ax1.legend(loc="upper left")
+    ax1.grid(True, alpha=0.3, axis="y")
+
+    ax2 = ax1.twinx()
+    ax2.plot(x, hit_rates, "o-", color="#1f77b4", linewidth=2, markersize=6, label="Hit Rate")
+    ax2.set_ylabel("Hit Rate (TP / (TP+FP))")
+    ax2.set_ylim(-0.05, 1.05)
+    ax2.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+    ax2.axhline(0.5, color="red", linewidth=0.5, linestyle="--", alpha=0.5, label="Random (50%)")
+    ax2.legend(loc="upper right")
+
+    for i, hr in enumerate(hit_rates):
+        if not (hr != hr):
+            ax2.annotate(f"{hr:.0%}", (i, hr), textcoords="offset points",
+                         xytext=(0, 8), ha="center", fontsize=8)
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def plot_parameter_heatmap(
+    sweep_csv: str | Path,
+    x_param: str = "top_k",
+    y_param: str = "risk_off_exposure",
+    metric: str = "sharpe_ratio",
+) -> bytes:
+    import pandas as pd
+    import numpy as np
+    df = pd.read_csv(sweep_csv)
+
+    if x_param not in df.columns or y_param not in df.columns:
+        raise ValueError(f"Parameters {x_param} or {y_param} not found in sweep CSV")
+
+    pivot = df.pivot_table(values=metric, index=y_param, columns=x_param, aggfunc="max")
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    im = ax.imshow(pivot.values, aspect="auto", cmap="RdYlGn", origin="lower")
+
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels([str(c) for c in pivot.columns])
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels([str(i) for i in pivot.index])
+    ax.set_xlabel(x_param)
+    ax.set_ylabel(y_param)
+    ax.set_title(f"Parameter Heatmap: {metric} by {y_param} x {x_param}")
+
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label(metric)
+
+    for yi in range(len(pivot.index)):
+        for xi in range(len(pivot.columns)):
+            val = pivot.values[yi, xi]
+            if not np.isnan(val):
+                ax.text(xi, yi, f"{val:.3f}", ha="center", va="center",
+                        fontsize=9, color="black" if 0.2 < abs(val) < 0.8 else "white")
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue()
 
 
 def _compute_drawdown_series(equity: list[float]) -> list[float]:

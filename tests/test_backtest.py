@@ -5,7 +5,11 @@ import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
-from quant_rotation.backtest import run_backtest, soft_risk_exposure
+from quant_rotation.backtest import (
+    classify_market_state,
+    run_backtest,
+    soft_risk_exposure,
+)
 from quant_rotation.data import (
     align_asset_data,
     align_benchmark,
@@ -150,6 +154,64 @@ class BacktestTests(unittest.TestCase):
         self.assertFalse(result.rebalances[0].market_score_ok)
         self.assertFalse(result.rebalances[0].risk_on)
         self.assertAlmostEqual(result.rebalances[0].exposure, 0.25)
+
+    def test_classify_market_state_bull(self) -> None:
+        closes = [100.0 * (1.001**i) for i in range(130)]
+
+        state = classify_market_state(0.08, closes, 129, 120)
+
+        self.assertEqual(state, "bull")
+
+    def test_classify_market_state_bear(self) -> None:
+        state = classify_market_state(-0.05, None, 5, 120)
+
+        self.assertEqual(state, "bear")
+
+    def test_classify_market_state_sideways(self) -> None:
+        state = classify_market_state(0.01, None, 5, 120)
+
+        self.assertEqual(state, "sideways")
+
+    def test_state_aware_risk_control_uses_sideways_exposure(self) -> None:
+        dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(150)]
+        prices = PriceData(
+            dates=dates,
+            closes={
+                "strong": [100.0 * (1.002**i) for i in range(150)],
+                "weak": [100.0 * (1.001**i) for i in range(150)],
+            },
+        )
+        market_data = PriceData(
+            dates=dates,
+            closes={
+                "Market": [100.0 * (1.0005**i) for i in range(150)],
+            },
+        )
+
+        result = run_backtest(
+            prices,
+            None,
+            StrategyConfig(
+                rebalance_every=20,
+                top_k=1,
+                max_industry_weight=1.0,
+                risk_control=True,
+                market_score_control=True,
+                market_score_window=20,
+                state_aware_risk_control=True,
+                sideways_exposure=0.5,
+                bear_exposure=0.1,
+            ),
+            market_data=market_data,
+        )
+
+        self.assertGreater(len(result.rebalances), 0)
+        self.assertTrue(
+            any(
+                0.45 < event.exposure < 0.55
+                for event in result.rebalances
+            )
+        )
 
     def test_soft_risk_exposure_extremes(self) -> None:
         self.assertAlmostEqual(soft_risk_exposure(0.0, center=0.0, steepness=20.0, min_exp=0.2, max_exp=1.0), 0.6, places=1)

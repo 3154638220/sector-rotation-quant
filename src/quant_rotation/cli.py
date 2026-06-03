@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from base64 import b64encode
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -1670,25 +1671,94 @@ def plot_command(args: argparse.Namespace) -> int:
     holding_path = report_dir / "holding_period_return_distribution.csv"
     annual_path = report_dir / "annual_returns.csv"
 
-    if not equity_path.exists():
-        print(f"Error: equity_curve.csv not found in {report_dir}")
+    from quant_rotation.plot import (
+        plot_walk_forward_folds,
+        plot_risk_control_accuracy,
+        plot_parameter_heatmap,
+    )
+
+    extra_sections = ""
+    has_base_plots = equity_path.exists()
+
+    wf_oos_path = report_dir / "walk_forward_oos_equity.csv"
+    wf_folds_path = report_dir / "walk_forward_folds.csv"
+    if wf_oos_path.exists() and wf_folds_path.exists():
+        try:
+            eq_png, bar_png = plot_walk_forward_folds(wf_oos_path, wf_folds_path)
+            extra_sections += (
+                f'<h2>WF Fold OOS Equity</h2>'
+                f'<img src="data:image/png;base64,{b64encode(eq_png).decode()}">'
+            )
+            extra_sections += (
+                f'<h2>WF Fold Returns</h2>'
+                f'<img src="data:image/png;base64,{b64encode(bar_png).decode()}">'
+            )
+        except Exception as exc:
+            print(f"Warning: WF fold plot skipped ({exc})")
+
+    accuracy_path = report_dir / "risk_control_accuracy.csv"
+    if accuracy_path.exists():
+        try:
+            acc_png = plot_risk_control_accuracy(accuracy_path)
+            extra_sections += (
+                f'<h2>Risk Control Accuracy</h2>'
+                f'<img src="data:image/png;base64,{b64encode(acc_png).decode()}">'
+            )
+        except Exception as exc:
+            print(f"Warning: risk control plot skipped ({exc})")
+
+    sweep_path = report_dir / "parameter_sweep.csv"
+    if sweep_path.exists():
+        try:
+            heatmap_png = plot_parameter_heatmap(sweep_path)
+            extra_sections += (
+                f'<h2>Parameter Heatmap</h2>'
+                f'<img src="data:image/png;base64,{b64encode(heatmap_png).decode()}">'
+            )
+        except Exception as exc:
+            print(f"Warning: parameter heatmap skipped ({exc})")
+
+    if not has_base_plots and not extra_sections:
+        print(f"Error: no plot data found in {report_dir}")
         return 1
 
-    annual_returns = {}
-    if annual_path.exists():
-        import csv as _csv
-        with annual_path.open("r", encoding="utf-8-sig") as handle:
-            reader = _csv.DictReader(handle)
-            for row in reader:
-                annual_returns[int(row["year"])] = float(row["strategy_return"])
-
     output_dir = args.output or str(report_dir)
-    html_path = write_html_report(
-        output_dir,
-        equity_path,
-        annual_returns=annual_returns if annual_returns else None,
-        holding_returns_path=holding_path if holding_path.exists() else None,
-    )
+
+    if has_base_plots:
+        annual_returns = {}
+        if annual_path.exists():
+            import csv as _csv
+            with annual_path.open("r", encoding="utf-8-sig") as handle:
+                reader = _csv.DictReader(handle)
+                for row in reader:
+                    annual_returns[int(row["year"])] = float(row["strategy_return"])
+
+        html_path = write_html_report(
+            output_dir,
+            equity_path,
+            annual_returns=annual_returns if annual_returns else None,
+            holding_returns_path=holding_path if holding_path.exists() else None,
+            extra_sections=extra_sections,
+        )
+    else:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>WF Validation Report</title>
+<style>
+body {{ font-family: -apple-system, sans-serif; max-width: 960px; margin: 0 auto; padding: 20px; background: #f5f5f5; }}
+h1 {{ color: #333; }}
+h2 {{ color: #555; margin-top: 30px; }}
+img {{ width: 100%; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin: 10px 0; }}
+</style></head>
+<body>
+<h1>Walk-Forward Validation Report</h1>
+{extra_sections}
+</body></html>"""
+        html_path = out / "report.html"
+        html_path.write_text(html, encoding="utf-8")
+
     print(f"HTML report written to: {html_path.resolve()}")
     return 0
 
