@@ -45,11 +45,76 @@ SW_LEVEL1_INDICES = [
     ("801980", "美容护理"),
 ]
 
+SW_2000_LEVEL1_INDICES = [
+    ("801010", "农林牧渔"),
+    ("801020", "采掘"),
+    ("801030", "化工"),
+    ("801040", "黑色金属"),
+    ("801050", "有色金属"),
+    ("801060", "建筑建材"),
+    ("801070", "机械设备"),
+    ("801080", "电子"),
+    ("801090", "交运设备"),
+    ("801100", "信息设备"),
+    ("801110", "家用电器"),
+    ("801120", "食品饮料"),
+    ("801130", "纺织服装"),
+    ("801140", "轻工制造"),
+    ("801150", "医药生物"),
+    ("801160", "公用事业"),
+    ("801170", "交通运输"),
+    ("801180", "房地产"),
+    ("801190", "金融服务"),
+    ("801200", "商业贸易"),
+    ("801210", "餐饮旅游"),
+    ("801220", "信息服务"),
+    ("801230", "综合"),
+]
+
+SW_2014_LEVEL1_INDICES = [
+    ("801010", "农林牧渔"),
+    ("801020", "采掘"),
+    ("801030", "化工"),
+    ("801040", "钢铁"),
+    ("801050", "有色金属"),
+    ("801080", "电子"),
+    ("801110", "家用电器"),
+    ("801120", "食品饮料"),
+    ("801130", "纺织服装"),
+    ("801140", "轻工制造"),
+    ("801150", "医药生物"),
+    ("801160", "公用事业"),
+    ("801170", "交通运输"),
+    ("801180", "房地产"),
+    ("801200", "商业贸易"),
+    ("801210", "休闲服务"),
+    ("801230", "综合"),
+    ("801710", "建筑材料"),
+    ("801720", "建筑装饰"),
+    ("801730", "电气设备"),
+    ("801740", "国防军工"),
+    ("801750", "计算机"),
+    ("801760", "传媒"),
+    ("801770", "通信"),
+    ("801780", "银行"),
+    ("801790", "非银金融"),
+    ("801880", "汽车"),
+    ("801890", "机械设备"),
+]
+
 
 @dataclass(frozen=True)
 class IndexInfo:
     code: str
     name: str
+
+
+SW_LEVEL1_UNIVERSES = {
+    "current": tuple(SW_LEVEL1_INDICES),
+    "sw2021": tuple(SW_LEVEL1_INDICES),
+    "sw2014": tuple(SW_2014_LEVEL1_INDICES),
+    "sw2000": tuple(SW_2000_LEVEL1_INDICES),
+}
 
 
 DEFAULT_MARKET_INDICES = [
@@ -182,9 +247,32 @@ def _cell_float(value: Any) -> float:
     return float(value)
 
 
-def sw_level1_index_infos(ak: Any | None = None) -> list[IndexInfo]:
+def sw_level1_universe_names() -> tuple[str, ...]:
+    return tuple(SW_LEVEL1_UNIVERSES)
+
+
+def _index_infos_from_pairs(pairs: tuple[tuple[str, str], ...]) -> list[IndexInfo]:
+    return [IndexInfo(code, name) for code, name in pairs]
+
+
+def sw_level1_index_infos(
+    ak: Any | None = None,
+    *,
+    universe: str = "current",
+) -> list[IndexInfo]:
+    normalized_universe = universe.strip().lower()
+    if normalized_universe not in SW_LEVEL1_UNIVERSES:
+        supported = ", ".join(sw_level1_universe_names())
+        raise ValueError(
+            f"Unsupported SW level-1 industry universe {universe!r}; "
+            f"expected one of: {supported}"
+        )
+
+    if normalized_universe != "current":
+        return _index_infos_from_pairs(SW_LEVEL1_UNIVERSES[normalized_universe])
+
     ak = ak or _require_akshare()
-    fallback = [IndexInfo(code, name) for code, name in SW_LEVEL1_INDICES]
+    fallback = _index_infos_from_pairs(SW_LEVEL1_UNIVERSES["sw2021"])
 
     try:
         frame = ak.index_realtime_sw(symbol="一级行业")
@@ -206,6 +294,8 @@ def fetch_sw_level1_close_data(
     end: date,
     *,
     ak: Any | None = None,
+    industries: list[IndexInfo] | None = None,
+    industry_universe: str = "current",
     progress: ProgressCallback | None = None,
     request_interval: float = 0.0,
 ) -> PriceData:
@@ -213,6 +303,8 @@ def fetch_sw_level1_close_data(
         start,
         end,
         ak=ak,
+        industries=industries,
+        industry_universe=industry_universe,
         progress=progress,
         request_interval=request_interval,
         require_amount=False,
@@ -224,6 +316,8 @@ def fetch_sw_level1_market_data(
     end: date,
     *,
     ak: Any | None = None,
+    industries: list[IndexInfo] | None = None,
+    industry_universe: str = "current",
     progress: ProgressCallback | None = None,
     request_interval: float = 0.0,
     require_amount: bool = True,
@@ -232,7 +326,13 @@ def fetch_sw_level1_market_data(
         raise ValueError("start must be earlier than or equal to end")
 
     ak = ak or _require_akshare()
-    infos = sw_level1_index_infos(ak)
+    infos = (
+        industries
+        if industries is not None
+        else sw_level1_index_infos(ak, universe=industry_universe)
+    )
+    if not infos:
+        raise ValueError("industries must contain at least one SW index")
     closes_by_asset: dict[str, dict[date, float]] = {}
     amounts_by_asset: dict[str, dict[date, float]] = {}
 
@@ -817,6 +917,8 @@ def write_real_data_files(
     market_data: PriceData | None = None,
     benchmark_symbol: str,
     market_symbols: dict[str, str] | None = None,
+    industry_universe: str | None = None,
+    industry_symbols: dict[str, str] | None = None,
     provider: str = "akshare",
 ) -> RealDataSummary:
     if amount_data is not None and amount_data.assets != industry_data.assets:
@@ -869,6 +971,10 @@ def write_real_data_files(
     }
     if market_symbols:
         manifest["market_symbols"] = market_symbols
+    if industry_universe:
+        manifest["industry_universe"] = industry_universe
+    if industry_symbols:
+        manifest["industry_symbols"] = industry_symbols
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
 
@@ -1106,15 +1212,23 @@ def fetch_and_write_real_data(
     end: date,
     *,
     benchmark_symbol: str = "sh000300",
+    industries: list[IndexInfo] | None = None,
+    industry_universe: str = "current",
     market_indices: list[IndexInfo] | None = None,
     progress: ProgressCallback | None = None,
     request_interval: float = 0.0,
 ) -> RealDataSummary:
     ak = _require_akshare()
+    industry_infos = (
+        industries
+        if industries is not None
+        else sw_level1_index_infos(ak, universe=industry_universe)
+    )
     industry_market_data = fetch_sw_level1_market_data(
         start,
         end,
         ak=ak,
+        industries=industry_infos,
         progress=progress,
         request_interval=request_interval,
         require_amount=False,
@@ -1149,4 +1263,6 @@ def fetch_and_write_real_data(
         market_data=style_market_data,
         benchmark_symbol=benchmark_symbol,
         market_symbols=market_symbols,
+        industry_universe="custom" if industries is not None else industry_universe,
+        industry_symbols={info.name: info.code for info in industry_infos},
     )

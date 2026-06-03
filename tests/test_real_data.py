@@ -15,6 +15,7 @@ from quant_rotation.data import (
 from quant_rotation.models import PriceData
 from quant_rotation.real_data import (
     compute_industry_breadth,
+    fetch_sw_level1_market_data,
     fetch_sw_level1_breadth_data,
     fetch_sw_level1_stock_data,
     IndexInfo,
@@ -23,6 +24,8 @@ from quant_rotation.real_data import (
     fetch_sw_level1_close_data,
     parse_date,
     StockMarketData,
+    sw_level1_index_infos,
+    sw_level1_universe_names,
     write_breadth_data_files,
     write_real_data_files,
     write_stock_data_files,
@@ -126,6 +129,20 @@ class RealDataTests(unittest.TestCase):
         self.assertEqual(parse_date("2024-01-02"), date(2024, 1, 2))
         self.assertEqual(parse_date("20240102"), date(2024, 1, 2))
 
+    def test_sw_level1_index_infos_supports_predefined_universe(self) -> None:
+        self.assertIn("sw2014", sw_level1_universe_names())
+
+        infos = sw_level1_index_infos(universe="sw2014")
+        codes = [info.code for info in infos]
+
+        self.assertEqual(len(infos), 28)
+        self.assertIn("801020", codes)
+        self.assertNotIn("801960", codes)
+
+    def test_sw_level1_index_infos_rejects_unknown_universe(self) -> None:
+        with self.assertRaises(ValueError):
+            sw_level1_index_infos(universe="unknown")
+
     def test_fetch_sw_level1_close_data_uses_common_dates(self) -> None:
         fake_ak = FakeAk()
         infos = [IndexInfo("801001", "行业A"), IndexInfo("801002", "行业B")]
@@ -140,6 +157,20 @@ class RealDataTests(unittest.TestCase):
         self.assertEqual(data.dates, [date(2024, 1, 2), date(2024, 1, 3)])
         self.assertEqual(data.closes["行业A"], [101.0, 102.0])
         self.assertEqual(data.closes["行业B"], [200.0, 202.0])
+
+    def test_fetch_sw_level1_market_data_accepts_explicit_industries(self) -> None:
+        fake_ak = FakeAk()
+        data = fetch_sw_level1_market_data(
+            date(2024, 1, 1),
+            date(2024, 1, 3),
+            ak=fake_ak,
+            industries=[IndexInfo("801002", "IndustryB")],
+            require_amount=False,
+        )
+
+        self.assertEqual(data.close.dates, [date(2024, 1, 2), date(2024, 1, 3)])
+        self.assertEqual(data.close.assets, ["IndustryB"])
+        self.assertEqual(data.close.closes["IndustryB"], [200.0, 202.0])
 
     def test_fetch_benchmark_close_data_requests_compact_dates(self) -> None:
         fake_ak = FakeAk()
@@ -353,6 +384,8 @@ class RealDataTests(unittest.TestCase):
                 market_data=market_data,
                 benchmark_symbol="sh000300",
                 market_symbols={"CSI300": "sh000300", "CSIAll": "sh000985"},
+                industry_universe="sw2014",
+                industry_symbols={"行业A": "801001", "行业B": "801002"},
             )
             loaded_industry = load_wide_close_csv(summary.industry_close_path)
             loaded_amount = load_wide_asset_csv(
@@ -363,6 +396,7 @@ class RealDataTests(unittest.TestCase):
             loaded_benchmark_dates, loaded_benchmark = load_benchmark_csv(
                 summary.benchmark_close_path
             )
+            manifest = summary.manifest_path.read_text(encoding="utf-8")
 
         self.assertEqual(summary.rows, 2)
         self.assertIsNotNone(summary.industry_amount_path)
@@ -375,6 +409,8 @@ class RealDataTests(unittest.TestCase):
         self.assertEqual(loaded_amount.closes["行业A"], [1100.0, 1200.0])
         self.assertEqual(loaded_benchmark_dates, [date(2024, 1, 2), date(2024, 1, 3)])
         self.assertEqual(loaded_benchmark, [3000.0, 3010.0])
+        self.assertIn('"industry_universe": "sw2014"', manifest)
+        self.assertIn('"行业A": "801001"', manifest)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@
 | A1 | 新增生产配置 `configs/production.toml` | ✅ 已完成。配置为 `ret60 + ret5`、Top 5、`risk_off_exposure = 0.00`，报告输出到 `reports/production` |
 | A2 | 更新 README 推荐命令流程 | ✅ 已完成。Quick Start 已改为真实数据优先，sample 数据作为 smoke test |
 | A3 | 在 `configs/real.toml` 中关闭拖累因子 | ✅ 已完成。`ret20 / ret120 / amount_strength / breadth / vol20` 均显式置零，保留 `ret60_weight = 1.00` 与 `ret5_weight = -0.50` |
-| B1 | 扩充历史数据至 2010 年 | 🔎 已定位根因。申万官方 `trend` 接口对多数旧行业可返回 1999 起数据；当前只能落到 `2021-12-13`，是因为固定使用 2021 版 31 个一级行业取共同日期，其中 `801960/801970/801980` 三个新行业只有 2021 版历史。下一步应改为分段行业宇宙或重建统一口径 |
+| B1 | 扩充历史数据至 2010 年 | ✅ 分段行业宇宙方案已落地。`fetch-real-data` 新增 `--industry-universe current/sw2021/sw2014/sw2000` 与 `--industry-indexes`；已生成 `data/real_sw2000`、`data/real_sw2014`、`data/real_sw2021` 三段官方指数宽表，覆盖 `2010-01-04` 至 `2026-06-02` |
 | B2 | 增加多指数 `market_close.csv` | ✅ 已完成。`fetch-real-data` 默认写入 `CSI300`、`CSIAll`、`ChiNext` 三列宽表；`production.toml` / `real.toml` 已启用 0.5/0.3/0.2 市场权重 |
 | B3 | 重校 `market_score_threshold` | ⚠️ 阶段性完成。新增 sweep/validate 阈值网格参数；当前 2021-2026 全样本中 `0.02` 年化 **8.48%**、最大回撤 **-17.26%**、Sharpe **0.68**，但月胜率仍 **29.1%**，需长历史复核后再改生产阈值 |
 | B4 | 改进 walk-forward 候选选择指标 | ✅ 已完成。新增 `sharpe_plus_calmar` 选择指标，并降低 composite 中换手率惩罚 |
@@ -29,12 +29,14 @@
 
 | 验证项 | 命令 / 输出 | 结果 |
 |------|-------------|------|
-| 单元测试 | `python -m unittest discover -s tests` | ✅ 33 个测试全部通过 |
+| 单元测试 | `python -m unittest discover -s tests` | ✅ 36 个测试全部通过 |
 | 生产配置回测 | `python -m quant_rotation run --config configs/production.toml` | 年化收益 **6.51%**，最大回撤 **-17.26%**，Sharpe **0.52**，最终净值 **1.3079** |
 | 修改后 `real.toml` 回测 | `python -m quant_rotation run --config configs/real.toml` | 年化收益 **4.90%**，最大回撤 **-22.78%**，Sharpe **0.38**；由于仍保留 `risk_off_exposure = 0.50`，弱于 production |
 | 扩展候选 sweep | `python -m quant_rotation sweep --config configs/production.toml --industry-only` | ✅ 192 个候选跑通；最佳为 `ret60_ret5_top5_riskoff0_riskctrl1_mscore0` |
 | walk-forward | `python -m quant_rotation validate --config configs/production.toml --industry-only --walk-forward --selection-metric sharpe_plus_calmar` | ✅ 4 折跑通；`walk_forward_summary.csv` 已输出测试 Sharpe 的 mean / median / std |
 | 多指数数据管道 | `python -m quant_rotation fetch-real-data --output data/real --start 2021-12-13 --end 2026-06-02 --benchmark sh000300` | ✅ 写入 `data/real/market_close.csv`，共同日期 1074 行；列为 `CSI300`、`CSIAll`、`ChiNext` |
+| 分段历史数据管道 | `fetch-real-data --industry-universe sw2000/sw2014/sw2021` | ✅ `sw2000`: 2010-01-04 至 2014-02-20，998 行、23 行业；`sw2014`: 2014-02-21 至 2021-12-10，1893 行、28 行业；`sw2021`: 2021-12-13 至 2026-06-02，1074 行、31 行业 |
+| 分段固定候选 walk-forward | `validate --walk-forward --factor-set ret60_ret5 --top-k 5 --risk-off-exposure 0 --market-score-threshold 0` | ✅ `sw2000`: 3 折，测试年化均值 **4.17%**、平均回撤 **-7.73%**；`sw2014`: 11 折，测试年化均值 **4.73%**、平均回撤 **-8.98%**；`sw2021`: 4 折，测试年化均值 **21.91%**、平均回撤 **-8.01%** |
 | 阈值扫描 | `python -m quant_rotation sweep --config configs/production.toml --industry-only --factor-set ret60_ret5 --top-k 5 --risk-off-exposure 0 --risk-control true --market-score-control true --market-score-threshold=-0.05,-0.02,0,0.02,0.05` | ⚠️ 全样本最佳 `threshold=0.02`，报告输出到 `reports/production/market_threshold_sweep`；walk-forward 固定候选中 `0.00` 与 `0.02` OOS 净值相同 |
 | 报告增强 | `python -m unittest discover -s tests` + `python -m quant_rotation run --config configs/production.toml` | ✅ 24 个测试全部通过；生产报告新增 4 个 D2 诊断 CSV。当前生产策略 48 次调仓中 29 次空仓，`risk_off_rebalance_share = 60.4%` |
 | 广度数据管道 | `python -m quant_rotation fetch-breadth-data --help` + `python -m unittest tests.test_real_data` | ✅ CLI 子命令可用；新增宽度计算、当前成分股抓取、CSV/manifest 落盘测试 |
@@ -43,7 +45,7 @@
 
 ### 0.3 当前阻塞与下一步
 
-- **历史数据扩展仍是最大阻塞**：本地 AKShare 没有可直接使用的 `sw_index_daily` 函数；`index_analysis_daily_sw` 当前抛出 `KeyError '发布日期'`，暂不能无痛替代。需要寻找新的稳定数据源或修补 AKShare 对申万历史日线接口的适配。
+- **历史数据扩展的第一阶段已完成**：分段行业宇宙数据已经覆盖 2010 至今。下一步不是继续抓同一份 31 行业共同交集，而是做分段参数扫描、OOS 串接净值，以及必要时重建统一 2021 口径历史指数。
 - **`market_score_threshold` 已完成阶段性扫描，但不宜仓促定版**：多指数加权市场分数下，全样本 `0.02` 优于 `0.0`，但 walk-forward 中两者 OOS 净值相同，且月胜率目标尚未达到。生产阈值暂保留 `0.0`，等待更长历史复核。
 - **Phase 3 广度数据已有管道但仍未进入生产**：`fetch-breadth-data` 已能基于当前申万成分股生成宽度 CSV；`production.toml` 中 breadth 权重仍保持 `0.00`，等待历史成分快照或无偏数据源接入后再增量验证。
 - **Phase 5 已具备当前成分股股票数据管道但仍非无偏生产数据**：`fetch-stock-data` 已能生成 `stock_close.csv` / `stock_amount.csv` / `stock_industry_map.csv`，回测端也支持按信号日读取历史行业归属快照；下一步需要把当前成分股近似版升级为历史成分快照版。
@@ -204,10 +206,45 @@ python -m quant_rotation fetch-real-data \
 - **统一口径路线：重建 2021 版历史指数**。用历史成分股、复权股价、市值/流通市值权重近似重建 31 个 2021 版行业到 2010；口径统一，但工程量大，并且需要严格标注“非官方重构指数”和幸存者/权重误差。
 - **外部数据源路线**。Tushare Pro `sw_daily`、BigQuant `cn_stock_industry_sw_bar1d` 等能直接提供申万行业日行情字段，但仍需确认分类版本与起始日期；它们可以作为官方/AKShare数据的交叉校验或商业数据源替代。
 
-建议下一步实现：
-1. 在 `fetch-real-data` 中增加 `--industry-universe sw2000,sw2014,sw2021` 或新增 `fetch-sw-segmented-data`。
-2. 输出 `data/real_sw2000`、`data/real_sw2014`、`data/real_sw2021` 三套宽表和 manifest。
-3. 新增 segmented validation：每段独立跑 sweep/walk-forward；确认有效后再做净值串接。
+已实现：
+1. `fetch-real-data` 新增 `--industry-universe current/sw2021/sw2014/sw2000`，并新增 `--industry-indexes NAME:CODE,...` 用于显式覆盖行业列表。
+2. 已输出 `data/real_sw2000`、`data/real_sw2014`、`data/real_sw2021` 三套宽表和 manifest；manifest 会记录 `industry_universe` 与行业代码映射。
+3. 已新增 `configs/real_sw2000.toml`、`configs/real_sw2014.toml`、`configs/real_sw2021.toml`，可直接运行三段回测。
+4. 已完成固定生产候选 `ret60_ret5_top5_riskoff0` 的分段 walk-forward 验证。
+
+已执行命令：
+
+```powershell
+python -m quant_rotation fetch-real-data `
+  --output data/real_sw2000 `
+  --start 2010-01-04 `
+  --end 2014-02-20 `
+  --benchmark sh000300 `
+  --industry-universe sw2000 `
+  --market-indexes=
+
+python -m quant_rotation fetch-real-data `
+  --output data/real_sw2014 `
+  --start 2014-02-21 `
+  --end 2021-12-10 `
+  --benchmark sh000300 `
+  --industry-universe sw2014
+
+python -m quant_rotation fetch-real-data `
+  --output data/real_sw2021 `
+  --start 2021-12-13 `
+  --end 2026-06-03 `
+  --benchmark sh000300 `
+  --industry-universe sw2021
+```
+
+阶段性结果：
+
+| 段落 | 数据区间 | 行业数 | 普通回测年化 | 普通回测最大回撤 | 固定候选 WF 测试年化均值 |
+|------|----------|-------:|-------------:|-----------------:|--------------------------:|
+| `sw2000` | `2010-01-04` 至 `2014-02-20` | 23 | **-5.22%** | **-27.09%** | **4.17%** |
+| `sw2014` | `2014-02-21` 至 `2021-12-10` | 28 | **10.28%** | **-54.83%** | **4.73%** |
+| `sw2021` | `2021-12-13` 至 `2026-06-02` | 31 | **6.51%** | **-17.26%** | **21.91%** |
 
 目标效果：
 - walk-forward 的 train/test 折数从 4-10 折增加到 30+ 折

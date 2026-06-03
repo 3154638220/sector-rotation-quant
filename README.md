@@ -295,6 +295,35 @@ python -m quant_rotation fetch-real-data `
   --request-interval 0.2
 ```
 
+For longer Shenwan history, use the predefined industry universes that match
+major classification eras. The early `sw2000` segment intentionally skips
+`market_close.csv` so the data can start at 2010-01-04; market-score control can
+fall back to the benchmark in configs that omit `market_close`.
+
+```powershell
+python -m quant_rotation fetch-real-data `
+  --output data/real_sw2000 `
+  --start 2010-01-04 `
+  --end 2014-02-20 `
+  --benchmark sh000300 `
+  --industry-universe sw2000 `
+  --market-indexes=
+
+python -m quant_rotation fetch-real-data `
+  --output data/real_sw2014 `
+  --start 2014-02-21 `
+  --end 2021-12-10 `
+  --benchmark sh000300 `
+  --industry-universe sw2014
+
+python -m quant_rotation fetch-real-data `
+  --output data/real_sw2021 `
+  --start 2021-12-13 `
+  --end 2026-06-03 `
+  --benchmark sh000300 `
+  --industry-universe sw2021
+```
+
 The `fetch-breadth-data` command computes phase-3 industry breadth files from
 SW industry constituents and A-share stock closes. The current implementation
 uses AKShare `index_component_sw` current constituents, so treat it as a

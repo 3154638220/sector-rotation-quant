@@ -24,6 +24,7 @@ from .real_data import (
     fetch_and_write_real_data,
     fetch_and_write_stock_data,
     parse_date,
+    sw_level1_universe_names,
 )
 from .reports import write_reports
 from .sample_data import generate_sample_data
@@ -91,6 +92,24 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated market index list as NAME:SYMBOL. "
             "Use an empty string to skip market_close.csv."
+        ),
+    )
+    fetch.add_argument(
+        "--industry-universe",
+        default="current",
+        choices=sw_level1_universe_names(),
+        help=(
+            "Predefined SW level-1 industry universe. Use sw2000 for "
+            "1999-2014, sw2014 for 2014-2021, sw2021 for 2021+, or current "
+            "to detect the latest universe from AKShare."
+        ),
+    )
+    fetch.add_argument(
+        "--industry-indexes",
+        default="",
+        help=(
+            "Optional comma-separated SW industry index list as NAME:CODE. "
+            "Overrides --industry-universe when provided."
         ),
     )
 
@@ -616,7 +635,7 @@ def _parse_float_tuple(value: str, name: str) -> tuple[float, ...]:
     return result
 
 
-def _parse_market_index_list(value: str) -> list[IndexInfo]:
+def _parse_index_info_list(value: str, option_name: str) -> list[IndexInfo]:
     indexes: list[IndexInfo] = []
     raw = value.strip()
     if not raw:
@@ -627,18 +646,26 @@ def _parse_market_index_list(value: str) -> list[IndexInfo]:
             continue
         if ":" not in normalized:
             raise ValueError(
-                "--market-indexes entries must use NAME:SYMBOL, "
+                f"{option_name} entries must use NAME:SYMBOL, "
                 f"got {normalized!r}"
             )
         name, symbol = (part.strip() for part in normalized.split(":", 1))
         if not name or not symbol:
             raise ValueError(
-                "--market-indexes entries must include both NAME and SYMBOL"
+                f"{option_name} entries must include both NAME and SYMBOL"
             )
         indexes.append(IndexInfo(symbol, name))
     if not indexes:
-        raise ValueError("--market-indexes must contain at least one valid entry")
+        raise ValueError(f"{option_name} must contain at least one valid entry")
     return indexes
+
+
+def _parse_market_index_list(value: str) -> list[IndexInfo]:
+    return _parse_index_info_list(value, "--market-indexes")
+
+
+def _parse_industry_index_list(value: str) -> list[IndexInfo]:
+    return _parse_index_info_list(value, "--industry-indexes")
 
 
 def sweep_command(args: argparse.Namespace) -> int:
@@ -879,11 +906,18 @@ def fetch_real_data_command(args: argparse.Namespace) -> int:
     start = parse_date(args.start)
     end = parse_date(args.end)
     market_indices = _parse_market_index_list(args.market_indexes)
+    industry_indexes = (
+        _parse_industry_index_list(args.industry_indexes)
+        if args.industry_indexes.strip()
+        else None
+    )
     summary = fetch_and_write_real_data(
         args.output,
         start,
         end,
         benchmark_symbol=args.benchmark,
+        industries=industry_indexes,
+        industry_universe=args.industry_universe,
         market_indices=market_indices,
         progress=print,
         request_interval=args.request_interval,
@@ -893,6 +927,10 @@ def fetch_real_data_command(args: argparse.Namespace) -> int:
     print(f"Rows: {summary.rows}")
     print(f"Industries: {summary.industries}")
     print(f"Benchmark: {summary.benchmark_symbol}")
+    print(
+        "Industry universe: "
+        f"{'custom' if industry_indexes is not None else args.industry_universe}"
+    )
     if summary.market_close_path:
         print(f"Market close: {summary.market_close_path.resolve()}")
     print(f"Manifest: {summary.manifest_path.resolve()}")
