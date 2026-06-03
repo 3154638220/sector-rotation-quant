@@ -18,15 +18,17 @@
 | B2 | 增加多指数 `market_close.csv` | ✅ 已完成。`fetch-real-data` 默认写入 `CSI300`、`CSIAll`、`ChiNext` 三列宽表；`production.toml` / `real.toml` 已启用 0.5/0.3/0.2 市场权重 |
 | B3 | 重校 `market_score_threshold` | ⚠️ 阶段性完成。新增 sweep/validate 阈值网格参数；当前 2021-2026 全样本中 `0.02` 年化 **8.48%**、最大回撤 **-17.26%**、Sharpe **0.68**，但月胜率仍 **29.1%**，需长历史复核后再改生产阈值 |
 | B4 | 改进 walk-forward 候选选择指标 | ✅ 已完成。新增 `sharpe_plus_calmar` 选择指标，并降低 composite 中换手率惩罚 |
+| C1 | 新增 `fetch-breadth-data` 子命令 | ✅ 阶段性完成。已实现当前申万成分股近似版宽度管道，输出 `industry_breadth20.csv` / `industry_breadth60.csv` 与 `breadth_manifest.json`；manifest 明确标注当前成分股幸存者偏差风险，等待历史成分快照接入后再进入生产 |
 | D1 | 扩大参数扫描候选集 | ✅ 已完成。默认覆盖 `ret60`、`ret60_ret5`、`ret60_ret120`、`ret60_ret120_ret5`，`top_k=(3,5,8)`，`risk_off=(0.0,0.2,0.3,0.5)` |
 | D2 | 增加基于持有期的性能分析 | ✅ 已完成。`write_reports` 现在输出 `holding_period_returns.csv`、`holding_period_return_distribution.csv`、`industry_selection_frequency.csv`、`risk_control_frequency.csv`，可直接诊断调仓周期收益、行业选择集中度与风控触发频率 |
 | D3 | 添加分年度超额报告 | ✅ 已完成。`annual_returns.csv` 已包含 `benchmark_return`、`industry_equal_weight_return`、`excess_vs_benchmark`、`excess_vs_equal_weight` |
+| E1/E3 | Phase 5 动态行业归属基础设施 | ✅ 阶段性完成。新增 `StockIndustryMap` 快照模型，`stock_industry_map.csv` 支持 `date` / `snapshot_date` / `as_of` 列；回测选股会按调仓信号日使用最近历史快照，静态 map 仍兼容 |
 
 ### 0.2 验证结果
 
 | 验证项 | 命令 / 输出 | 结果 |
 |------|-------------|------|
-| 单元测试 | `python -m unittest discover -s tests` | ✅ 23 个测试全部通过 |
+| 单元测试 | `python -m unittest discover -s tests` | ✅ 31 个测试全部通过 |
 | 生产配置回测 | `python -m quant_rotation run --config configs/production.toml` | 年化收益 **6.51%**，最大回撤 **-17.26%**，Sharpe **0.52**，最终净值 **1.3079** |
 | 修改后 `real.toml` 回测 | `python -m quant_rotation run --config configs/real.toml` | 年化收益 **4.90%**，最大回撤 **-22.78%**，Sharpe **0.38**；由于仍保留 `risk_off_exposure = 0.50`，弱于 production |
 | 扩展候选 sweep | `python -m quant_rotation sweep --config configs/production.toml --industry-only` | ✅ 192 个候选跑通；最佳为 `ret60_ret5_top5_riskoff0_riskctrl1_mscore0` |
@@ -34,12 +36,15 @@
 | 多指数数据管道 | `python -m quant_rotation fetch-real-data --output data/real --start 2021-12-13 --end 2026-06-02 --benchmark sh000300` | ✅ 写入 `data/real/market_close.csv`，共同日期 1074 行；列为 `CSI300`、`CSIAll`、`ChiNext` |
 | 阈值扫描 | `python -m quant_rotation sweep --config configs/production.toml --industry-only --factor-set ret60_ret5 --top-k 5 --risk-off-exposure 0 --risk-control true --market-score-control true --market-score-threshold=-0.05,-0.02,0,0.02,0.05` | ⚠️ 全样本最佳 `threshold=0.02`，报告输出到 `reports/production/market_threshold_sweep`；walk-forward 固定候选中 `0.00` 与 `0.02` OOS 净值相同 |
 | 报告增强 | `python -m unittest discover -s tests` + `python -m quant_rotation run --config configs/production.toml` | ✅ 24 个测试全部通过；生产报告新增 4 个 D2 诊断 CSV。当前生产策略 48 次调仓中 29 次空仓，`risk_off_rebalance_share = 60.4%` |
+| 广度数据管道 | `python -m quant_rotation fetch-breadth-data --help` + `python -m unittest tests.test_real_data` | ✅ CLI 子命令可用；新增宽度计算、当前成分股抓取、CSV/manifest 落盘测试 |
+| 动态行业归属 | `python -m unittest tests.test_stock_selection` + `python -m unittest discover -s tests` | ✅ 静态 map、带日期快照 map、按信号日切换股票行业归属均已覆盖；全量 31 个测试通过 |
 
 ### 0.3 当前阻塞与下一步
 
 - **历史数据扩展仍是最大阻塞**：本地 AKShare 没有可直接使用的 `sw_index_daily` 函数；`index_analysis_daily_sw` 当前抛出 `KeyError '发布日期'`，暂不能无痛替代。需要寻找新的稳定数据源或修补 AKShare 对申万历史日线接口的适配。
 - **`market_score_threshold` 已完成阶段性扫描，但不宜仓促定版**：多指数加权市场分数下，全样本 `0.02` 优于 `0.0`，但 walk-forward 中两者 OOS 净值相同，且月胜率目标尚未达到。生产阈值暂保留 `0.0`，等待更长历史复核。
-- **Phase 3 广度数据仍未进入生产**：`production.toml` 中 breadth 权重保持 `0.00`，等待成分股历史快照与 breadth 数据管道完成后再增量验证。
+- **Phase 3 广度数据已有管道但仍未进入生产**：`fetch-breadth-data` 已能基于当前申万成分股生成宽度 CSV；`production.toml` 中 breadth 权重仍保持 `0.00`，等待历史成分快照或无偏数据源接入后再增量验证。
+- **Phase 5 已具备动态行业归属接口但缺真实数据落地**：回测端已支持按信号日读取历史行业归属快照；下一步仍需要构建 `stock_close.csv` / `stock_amount.csv` 与 `stock_industry_map.csv` 的真实历史数据管道。
 
 ---
 
@@ -51,7 +56,7 @@
 |------|------|------|
 | 阶段 1 | 价格动量（ret20 / ret60 / ret120） | ✅ 完整实现 |
 | 阶段 2 | 成交额强度（amount_strength） | ✅ 代码完整，但**因子表现为负** |
-| 阶段 3 | 行业内部广度（breadth20 / breadth60） | ⚠️ 代码完整，实盘数据**缺失** |
+| 阶段 3 | 行业内部广度（breadth20 / breadth60） | ⚠️ 数据管道阶段性完成，仍缺历史成分快照复核 |
 | 阶段 4 | 市场环境过滤（MA120 + market_score） | ⚠️ 已实现，但 market_close 仅有基准单指数 |
 | 阶段 5 | 行业内部选股 | ⚠️ 代码完整，实盘股票数据**缺失** |
 
@@ -211,26 +216,29 @@ python -m quant_rotation fetch-real-data \
 
 ### 阶段 C：Phase 3 广度数据实现（4-6 周）
 
-当前 Phase 3（行业内部广度）的代码框架已完整，缺少的是数据生成管道。
+当前 Phase 3（行业内部广度）的代码框架已完整，数据生成管道已完成当前成分股近似版。剩余关键问题是接入历史成分快照，消除幸存者偏差。
 
 **C1：新增 `fetch-breadth-data` 子命令**
 
-在 `cli.py` 和 `real_data.py` 中增加：
+已在 `cli.py` 和 `real_data.py` 中增加：
 
-```python
-# 伪代码
-def fetch_breadth_data(industries, start, end, output_dir):
-    for industry in industries:
-        # 获取行业成分股列表（AKShare: sw_index_cons）
-        # 对每只成分股，获取历史收盘价
-        # 逐日计算：收盘 > MA20 的比例 → breadth20
-        # 逐日计算：收盘 > MA60 的比例 → breadth60
-    # 写入 industry_breadth20.csv, industry_breadth60.csv
+```powershell
+python -m quant_rotation fetch-breadth-data `
+  --output data/real `
+  --start 2021-12-13 `
+  --end 2026-06-02 `
+  --windows 20,60 `
+  --request-interval 0.2
 ```
 
+输出：
+- `industry_breadth20.csv`
+- `industry_breadth60.csv`
+- `breadth_manifest.json`
+
 注意事项：
-- 成分股列表应使用**历史快照**（需要 AKShare 的 `sw_index_daily_cons` 接口），不能用当前成分股倒推，否则引入幸存者偏差
-- 如 AKShare 不提供历史成分股，可退而求其次使用当前成分股，但在注释中明确标注此偏差
+- 当前实现使用 AKShare `index_component_sw` 当前成分股，`breadth_manifest.json` 已明确标注幸存者偏差风险。
+- 正式生产前仍应优先接入历史成分快照，或使用其他稳定数据源提供的日期级行业归属。
 
 **C2：启用广度因子并做增量测试**
 
@@ -294,11 +302,11 @@ DEFAULT_RISK_OFF_EXPOSURES = (0.0, 0.2, 0.3, 0.5)  # 细化 risk_off 格点
 
 Phase 5 的实现较为复杂，需要以下数据基础设施：
 
-**E1：构建历史股票行业归属图**
+**E1：构建历史股票行业归属图（基础设施已完成，数据管道待接入）**
 
 申万行业成分股会随时间变更，需要按年度快照构建 `stock_industry_map_YYYYMMDD.csv`，并在回测中按日期动态加载，而非使用单一静态文件。
 
-建议在 `models.py` 中扩展：
+当前已在 `models.py` 中新增：
 
 ```python
 @dataclass
@@ -309,6 +317,10 @@ class StockIndustryMap:
         # 返回 dt 当日或之前最新的成分股映射
 ```
 
+`data.load_stock_industry_map_csv()` 现在支持两种格式：
+- 静态格式：`stock,industry`
+- 快照格式：`snapshot_date,stock,industry`（也兼容 `date` / `as_of`）
+
 **E2：获取 A 股历史数据**
 
 需要约 5000 只股票 × 10 年的日线数据，体量较大（约 500MB CSV）。建议：
@@ -317,9 +329,9 @@ class StockIndustryMap:
 - 使用 AKShare `stock_zh_a_hist` 接口，按行业分批下载
 - 存储格式：宽表 CSV（与现有 `industry_close.csv` 格式一致）
 
-**E3：修改 `stock_selection.py` 以支持动态成分股**
+**E3：修改 `stock_selection.py` 以支持动态成分股（已完成）**
 
-当前 `stocks_by_industry()` 只接受静态 `dict[str, str]`，需要扩展为接受 `StockIndustryMap` 对象，并在每个调仓日使用对应时点的成分。
+`stocks_by_industry()` 和 `stock_target_weights()` 已接受 `StockIndustryMap` 对象；`run_backtest()` 在每个调仓日传入因子 `signal_date`，选股时使用该日期之前最新的行业归属快照。静态 `dict[str, str]` 和旧版 sample CSV 仍保持兼容。
 
 ---
 
@@ -360,11 +372,11 @@ prosperity_i = 0.5 * 行业近期成交额增速 + 0.5 * 行业内盈利修正�
 | 🟠 P1 | 多指数 market_close.csv（阶段 B2）| ✅ 已完成 | 改善市场环境判断准确性 |
 | 🟠 P1 | 重校 market_score_threshold（阶段 B3）| ⚠️ 阶段性完成，需长历史复核 | 提升月胜率 |
 | 🟠 P1 | 扩大参数扫描候选集（阶段 D1）| ✅ 已完成 | 更全面的候选覆盖 |
-| 🟡 P2 | 广度数据管道 fetch-breadth-data（阶段 C1）| ⏳ 未开始 | 验证 Phase 3 有效性 |
+| 🟡 P2 | 广度数据管道 fetch-breadth-data（阶段 C1）| ✅ 阶段性完成：当前成分股近似版已实现，待历史快照复核 | 验证 Phase 3 有效性 |
 | 🟡 P2 | 改进 walk-forward 选择指标（阶段 B4）| ✅ 已完成 | 降低验证噪声 |
 | 🟡 P2 | 持有期 / 行业频率 / 风控频率报告（阶段 D2）| ✅ 已完成 | 解释调仓收益分布、行业拥挤度与风控触发来源 |
 | 🟡 P2 | 分年度超额等详细报告（阶段 D3）| ✅ 已完成 | 更清晰的策略诊断 |
-| 🟢 P3 | Phase 5 个股选择基础设施（阶段 E）| ⏳ 未开始 | 从行业到股票的完整策略 |
+| 🟢 P3 | Phase 5 个股选择基础设施（阶段 E）| ✅ 阶段性完成：动态行业归属模型与按信号日选股已接入；真实股票数据管道待建 | 从行业到股票的完整策略 |
 | 🟢 P3 | 估值/景气度因子（阶段 F）| ⏳ 未开始 | 在当前动量框架上叠加 |
 
 ---

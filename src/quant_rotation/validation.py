@@ -7,7 +7,13 @@ from statistics import mean, median, pstdev
 from pathlib import Path
 
 from .metrics import annual_returns, summarize_performance
-from .models import BacktestResult, BreadthData, PriceData, StrategyConfig
+from .models import (
+    BacktestResult,
+    BreadthData,
+    PriceData,
+    StockIndustryMap,
+    StrategyConfig,
+)
 from .sweep import (
     DEFAULT_FACTOR_SET_NAMES,
     DEFAULT_MARKET_SCORE_THRESHOLDS,
@@ -280,7 +286,7 @@ def run_train_test_validation(
     market_weights: dict[str, float] | None = None,
     stock_data: PriceData | None = None,
     stock_amount_data: PriceData | None = None,
-    stock_industry_map: dict[str, str] | None = None,
+    stock_industry_map: StockIndustryMap | dict[str, str] | None = None,
     factor_set_names: tuple[str, ...] = DEFAULT_FACTOR_SET_NAMES,
     top_k_values: tuple[int, ...] = DEFAULT_TOP_K_VALUES,
     risk_off_exposures: tuple[float, ...] = DEFAULT_RISK_OFF_EXPOSURES,
@@ -360,7 +366,7 @@ def run_walk_forward_validation(
     market_weights: dict[str, float] | None = None,
     stock_data: PriceData | None = None,
     stock_amount_data: PriceData | None = None,
-    stock_industry_map: dict[str, str] | None = None,
+    stock_industry_map: StockIndustryMap | dict[str, str] | None = None,
     factor_set_names: tuple[str, ...] = DEFAULT_FACTOR_SET_NAMES,
     top_k_values: tuple[int, ...] = DEFAULT_TOP_K_VALUES,
     risk_off_exposures: tuple[float, ...] = DEFAULT_RISK_OFF_EXPOSURES,

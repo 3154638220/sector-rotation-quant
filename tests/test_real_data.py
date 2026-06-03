@@ -9,11 +9,14 @@ from unittest.mock import patch
 from quant_rotation.data import load_benchmark_csv, load_wide_asset_csv, load_wide_close_csv
 from quant_rotation.models import PriceData
 from quant_rotation.real_data import (
+    compute_industry_breadth,
+    fetch_sw_level1_breadth_data,
     IndexInfo,
     fetch_benchmark_close_data,
     fetch_market_close_data,
     fetch_sw_level1_close_data,
     parse_date,
+    write_breadth_data_files,
     write_real_data_files,
 )
 
@@ -29,6 +32,19 @@ class FakeFrame:
 
 
 class FakeAk:
+    def index_component_sw(self, symbol: str) -> FakeFrame:
+        rows_by_symbol = {
+            "801001": [
+                {"证券代码": "000001", "证券名称": "A1"},
+                {"证券代码": "000002", "证券名称": "A2"},
+            ],
+            "801002": [
+                {"证券代码": "000003", "证券名称": "B1"},
+                {"证券代码": "000004", "证券名称": "B2"},
+            ],
+        }
+        return FakeFrame(rows_by_symbol[symbol])
+
     def index_hist_sw(self, symbol: str, period: str) -> FakeFrame:
         self.period = period
         rows_by_symbol = {
@@ -74,6 +90,27 @@ class FakeAk:
                 {"date": "2024-01-03", "close": "3010.0"},
             ]
         )
+
+    def stock_zh_a_hist(
+        self,
+        symbol: str,
+        period: str,
+        start_date: str,
+        end_date: str,
+        adjust: str,
+    ) -> FakeFrame:
+        self.last_stock_request = (symbol, period, start_date, end_date, adjust)
+        closes_by_symbol = {
+            "000001": [1, 2, 3, 4, 5],
+            "000002": [5, 4, 3, 2, 1],
+            "000003": [1, 1, 2, 3, 4],
+            "000004": [1, 2, 4, 8, 16],
+        }
+        rows = [
+            {"日期": f"2024-01-0{index}", "股票代码": symbol, "收盘": close}
+            for index, close in enumerate(closes_by_symbol[symbol], start=1)
+        ]
+        return FakeFrame(rows)
 
 
 class RealDataTests(unittest.TestCase):
@@ -128,6 +165,78 @@ class RealDataTests(unittest.TestCase):
         self.assertEqual(market_data.assets, ["CSI300", "CSIAll", "ChiNext"])
         self.assertEqual(market_data.closes["CSI300"], [3000.0, 3010.0])
         self.assertEqual(market_data.closes["CSIAll"], [5010.0, 5020.0])
+
+    def test_compute_industry_breadth_counts_stocks_above_ma(self) -> None:
+        stock_closes = {
+            "000001": {
+                date(2024, 1, 1): 1.0,
+                date(2024, 1, 2): 2.0,
+                date(2024, 1, 3): 3.0,
+            },
+            "000002": {
+                date(2024, 1, 1): 5.0,
+                date(2024, 1, 2): 4.0,
+                date(2024, 1, 3): 3.0,
+            },
+        }
+
+        breadth = compute_industry_breadth(
+            {"IndustryA": ["000001", "000002"]},
+            stock_closes,
+            date(2024, 1, 1),
+            date(2024, 1, 3),
+            windows=(3,),
+        )
+
+        self.assertEqual(breadth[3].dates, [date(2024, 1, 3)])
+        self.assertEqual(breadth[3].closes["IndustryA"], [0.5])
+
+    def test_fetch_sw_level1_breadth_data_uses_current_constituents(self) -> None:
+        fake_ak = FakeAk()
+        breadth = fetch_sw_level1_breadth_data(
+            date(2024, 1, 3),
+            date(2024, 1, 5),
+            ak=fake_ak,
+            industries=[
+                IndexInfo("801001", "IndustryA"),
+                IndexInfo("801002", "IndustryB"),
+            ],
+            windows=(3,),
+            lookback_days=3,
+        )
+
+        self.assertEqual(
+            breadth[3].dates,
+            [date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5)],
+        )
+        self.assertEqual(breadth[3].closes["IndustryA"], [0.5, 0.5, 0.5])
+        self.assertEqual(breadth[3].closes["IndustryB"], [1.0, 1.0, 1.0])
+
+    def test_write_breadth_data_files_outputs_loadable_csvs(self) -> None:
+        breadth = PriceData(
+            dates=[date(2024, 1, 3), date(2024, 1, 4)],
+            closes={
+                "IndustryA": [0.5, 0.75],
+                "IndustryB": [1.0, 0.25],
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = write_breadth_data_files(
+                Path(tmp),
+                {20: breadth},
+                min_stocks=1,
+            )
+            loaded = load_wide_asset_csv(
+                summary.breadth_paths[20],
+                value_name="breadth20",
+            )
+            manifest = summary.manifest_path.read_text(encoding="utf-8")
+
+        self.assertEqual(summary.rows, 2)
+        self.assertEqual(loaded.assets, ["IndustryA", "IndustryB"])
+        self.assertEqual(loaded.closes["IndustryA"], [0.5, 0.75])
+        self.assertIn("survivor_bias_warning", manifest)
 
     def test_write_real_data_files_outputs_loadable_csvs(self) -> None:
         industry_data = PriceData(

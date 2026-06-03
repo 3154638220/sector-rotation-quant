@@ -5,7 +5,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .backtest import run_backtest
-from .models import BacktestResult, BreadthData, FactorWeights, PriceData, StrategyConfig
+from .models import (
+    BacktestResult,
+    BreadthData,
+    FactorWeights,
+    PriceData,
+    StockIndustryMap,
+    StrategyConfig,
+)
 
 
 FACTOR_FIELDS = (
@@ -168,7 +175,7 @@ def run_factor_decomposition(
     market_weights: dict[str, float] | None = None,
     stock_data: PriceData | None = None,
     stock_amount_data: PriceData | None = None,
-    stock_industry_map: dict[str, str] | None = None,
+    stock_industry_map: StockIndustryMap | dict[str, str] | None = None,
 ) -> list[FactorDecompositionRun]:
     specs = build_factor_decomposition_specs(
         config.factor_weights,

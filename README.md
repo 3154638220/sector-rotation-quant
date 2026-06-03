@@ -244,13 +244,24 @@ date,CSI300,CSIAll,ChiNext
 ```
 
 Stock close and amount data are optional and use the same wide format as
-industry data. Stock selection also requires a stock-to-industry map:
+industry data. Stock selection also requires a stock-to-industry map. A static
+map uses one row per stock:
 
 ```csv
 stock,industry
 Agriculture_01,Agriculture
 Agriculture_02,Agriculture
 Coal_01,Coal
+```
+
+For historical research, prefer dated snapshots so the backtest uses the latest
+mapping available on or before each rebalance signal date:
+
+```csv
+snapshot_date,stock,industry
+2024-01-01,Agriculture_01,Agriculture
+2024-01-01,Coal_01,Coal
+2024-07-01,Agriculture_01,Food & Beverage
 ```
 
 When stock selection is enabled, the model first selects industries, then ranks
@@ -268,6 +279,7 @@ The generated files are:
 
 - `data/real/industry_close.csv`
 - `data/real/industry_amount.csv` when AKShare returns amount or volume fields
+- `data/real/market_close.csv` when market indexes are enabled
 - `data/real/benchmark_close.csv`
 - `data/real/manifest.json`
 
@@ -282,6 +294,24 @@ python -m quant_rotation fetch-real-data `
   --benchmark sh000300 `
   --request-interval 0.2
 ```
+
+The `fetch-breadth-data` command computes phase-3 industry breadth files from
+SW industry constituents and A-share stock closes. The current implementation
+uses AKShare `index_component_sw` current constituents, so treat it as a
+research approximation until historical constituent snapshots are wired in:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m quant_rotation fetch-breadth-data `
+  --output data/real `
+  --start 2021-12-13 `
+  --end 2026-06-02 `
+  --windows 20,60 `
+  --request-interval 0.2
+```
+
+This writes `industry_breadth20.csv`, `industry_breadth60.csv`, and
+`breadth_manifest.json`.
 
 The CLI writes reports to `reports/` by default:
 
@@ -343,4 +373,4 @@ to `risk_off_exposure`.
 
 The default sample config enables phase-5 stock selection. For real data, keep
 `stock_selection` disabled until the stock close data and historical
-stock-to-industry map are prepared without look-ahead bias.
+stock-to-industry map snapshots are prepared without look-ahead bias.

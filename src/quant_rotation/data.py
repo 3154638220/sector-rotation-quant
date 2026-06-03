@@ -4,7 +4,7 @@ import csv
 from datetime import date
 from pathlib import Path
 
-from .models import PriceData
+from .models import PriceData, StockIndustryMap
 
 
 def load_wide_asset_csv(path: str | Path, value_name: str = "value") -> PriceData:
@@ -75,7 +75,7 @@ def load_benchmark_csv(path: str | Path) -> tuple[list[date], list[float]]:
     return [item[0] for item in rows], [item[1] for item in rows]
 
 
-def load_stock_industry_map_csv(path: str | Path) -> dict[str, str]:
+def load_stock_industry_map_csv(path: str | Path) -> StockIndustryMap:
     csv_path = Path(path)
     if not csv_path.exists():
         raise FileNotFoundError(f"Stock industry map not found: {csv_path}")
@@ -86,20 +86,37 @@ def load_stock_industry_map_csv(path: str | Path) -> dict[str, str]:
             raise ValueError(f"{csv_path} must contain stock and industry columns")
         if "stock" not in reader.fieldnames or "industry" not in reader.fieldnames:
             raise ValueError(f"{csv_path} must contain 'stock' and 'industry' columns")
+        date_column = next(
+            (
+                column
+                for column in ("date", "snapshot_date", "as_of")
+                if column in reader.fieldnames
+            ),
+            None,
+        )
 
-        mapping: dict[str, str] = {}
+        snapshots: dict[date, dict[str, str]] = {}
         for row in reader:
             stock = (row.get("stock") or "").strip()
             industry = (row.get("industry") or "").strip()
             if not stock or not industry:
                 continue
+            snapshot_date = (
+                date.fromisoformat((row.get(date_column) or "").strip())
+                if date_column
+                else date.min
+            )
+            mapping = snapshots.setdefault(snapshot_date, {})
             if stock in mapping:
-                raise ValueError(f"Duplicate stock in industry map: {stock}")
+                raise ValueError(
+                    "Duplicate stock in industry map snapshot "
+                    f"{snapshot_date.isoformat()}: {stock}"
+                )
             mapping[stock] = industry
 
-    if not mapping:
+    if not snapshots:
         raise ValueError(f"{csv_path} must contain at least one stock mapping")
-    return mapping
+    return StockIndustryMap(snapshots)
 
 
 def align_benchmark(

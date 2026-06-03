@@ -4,7 +4,7 @@ import csv
 import json
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -73,6 +73,20 @@ class RealDataSummary:
     benchmark_symbol: str
     market_close_path: Path | None = None
     market_symbols: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class BreadthDataSummary:
+    output_dir: Path
+    breadth_paths: dict[int, Path]
+    manifest_path: Path
+    start: date
+    end: date
+    rows: int
+    industries: int
+    windows: tuple[int, ...]
+    min_stocks: int
+    current_constituents: bool = True
 
 
 @dataclass(frozen=True)
@@ -335,6 +349,211 @@ def fetch_market_close_data(
     return PriceData(dates=common_dates, closes=closes)
 
 
+def _normalize_stock_code(value: Any) -> str:
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    raw = raw.split(".", 1)[0]
+    if raw.endswith(".0"):
+        raw = raw[:-2]
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return digits.zfill(6) if digits else raw
+
+
+def fetch_sw_level1_constituents(
+    *,
+    ak: Any | None = None,
+    industries: list[IndexInfo] | None = None,
+    progress: ProgressCallback | None = None,
+    request_interval: float = 0.0,
+) -> dict[str, list[str]]:
+    ak = ak or _require_akshare()
+    infos = industries if industries is not None else sw_level1_index_infos(ak)
+    if not infos:
+        raise ValueError("industries must contain at least one SW index")
+
+    result: dict[str, list[str]] = {}
+    for number, info in enumerate(infos, start=1):
+        if progress:
+            progress(
+                f"Fetching SW constituents {number}/{len(infos)}: "
+                f"{info.code} {info.name}"
+            )
+        frame = ak.index_component_sw(symbol=info.code)
+        stocks: list[str] = []
+        for row in _records(frame):
+            code = _normalize_stock_code(
+                _cell(row, "证券代码", "股票代码", "成分券代码", "code", "symbol")
+            )
+            if code:
+                stocks.append(code)
+        deduped = list(dict.fromkeys(stocks))
+        if not deduped:
+            raise ValueError(f"No constituents returned for {info.code} {info.name}")
+        result[info.name] = deduped
+        if request_interval > 0 and number < len(infos):
+            time.sleep(request_interval)
+    return result
+
+
+def fetch_stock_close_data(
+    symbol: str,
+    start: date,
+    end: date,
+    *,
+    ak: Any | None = None,
+    adjust: str = "",
+) -> dict[date, float]:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+
+    ak = ak or _require_akshare()
+    frame = ak.stock_zh_a_hist(
+        symbol=_normalize_stock_code(symbol),
+        period="daily",
+        start_date=compact_date(start),
+        end_date=compact_date(end),
+        adjust=adjust,
+    )
+    closes: dict[date, float] = {}
+    for row in _records(frame):
+        day = _cell_date(_cell(row, "日期", "date"))
+        if start <= day <= end:
+            closes[day] = _cell_float(_cell(row, "收盘", "close"))
+    return closes
+
+
+def compute_industry_breadth(
+    constituents_by_industry: dict[str, list[str]],
+    stock_closes: dict[str, dict[date, float]],
+    start: date,
+    end: date,
+    *,
+    windows: tuple[int, ...] = (20, 60),
+    min_stocks: int = 1,
+) -> dict[int, PriceData]:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+    if not constituents_by_industry:
+        raise ValueError("constituents_by_industry must not be empty")
+    if not windows:
+        raise ValueError("windows must contain at least one value")
+    if any(window <= 0 for window in windows):
+        raise ValueError("breadth windows must be positive")
+    if min_stocks <= 0:
+        raise ValueError("min_stocks must be positive")
+
+    sorted_windows = tuple(sorted(dict.fromkeys(windows)))
+    values_by_window: dict[int, dict[str, dict[date, float]]] = {
+        window: {} for window in sorted_windows
+    }
+
+    for industry, stocks in constituents_by_industry.items():
+        unique_stocks = list(dict.fromkeys(stocks))
+        if not unique_stocks:
+            raise ValueError(f"No constituents configured for industry {industry!r}")
+        for window in sorted_windows:
+            above_by_day: dict[date, int] = {}
+            eligible_by_day: dict[date, int] = {}
+            for stock in unique_stocks:
+                series = stock_closes.get(stock)
+                if not series:
+                    continue
+                ordered = sorted(series.items(), key=lambda item: item[0])
+                for index, (day, close) in enumerate(ordered):
+                    if day < start or day > end or index + 1 < window:
+                        continue
+                    trailing = [value for _, value in ordered[index + 1 - window : index + 1]]
+                    moving_average = sum(trailing) / window
+                    eligible_by_day[day] = eligible_by_day.get(day, 0) + 1
+                    if close > moving_average:
+                        above_by_day[day] = above_by_day.get(day, 0) + 1
+
+            industry_values = {
+                day: above_by_day.get(day, 0) / eligible
+                for day, eligible in eligible_by_day.items()
+                if eligible >= min_stocks
+            }
+            if not industry_values:
+                raise ValueError(
+                    f"No breadth values for {industry!r} with MA{window}; "
+                    "check constituent stock data and min_stocks"
+                )
+            values_by_window[window][industry] = industry_values
+
+    result: dict[int, PriceData] = {}
+    for window, values_by_industry in values_by_window.items():
+        common_dates = sorted(
+            set.intersection(*(set(values) for values in values_by_industry.values()))
+        )
+        if not common_dates:
+            raise ValueError(f"No common breadth dates found for MA{window}")
+        closes = {
+            industry: [values[day] for day in common_dates]
+            for industry, values in values_by_industry.items()
+        }
+        result[window] = PriceData(dates=common_dates, closes=closes)
+    return result
+
+
+def fetch_sw_level1_breadth_data(
+    start: date,
+    end: date,
+    *,
+    ak: Any | None = None,
+    industries: list[IndexInfo] | None = None,
+    windows: tuple[int, ...] = (20, 60),
+    min_stocks: int = 1,
+    adjust: str = "",
+    lookback_days: int | None = None,
+    progress: ProgressCallback | None = None,
+    request_interval: float = 0.0,
+) -> dict[int, PriceData]:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+    if not windows:
+        raise ValueError("windows must contain at least one value")
+
+    ak = ak or _require_akshare()
+    resolved_windows = tuple(sorted(dict.fromkeys(windows)))
+    history_start = start - timedelta(
+        days=lookback_days if lookback_days is not None else max(resolved_windows) * 3
+    )
+    constituents = fetch_sw_level1_constituents(
+        ak=ak,
+        industries=industries,
+        progress=progress,
+        request_interval=request_interval,
+    )
+    all_stocks = sorted({stock for stocks in constituents.values() for stock in stocks})
+    stock_closes: dict[str, dict[date, float]] = {}
+    for number, stock in enumerate(all_stocks, start=1):
+        if progress:
+            progress(f"Fetching stock {number}/{len(all_stocks)}: {stock}")
+        closes = fetch_stock_close_data(
+            stock,
+            history_start,
+            end,
+            ak=ak,
+            adjust=adjust,
+        )
+        if closes:
+            stock_closes[stock] = closes
+        if request_interval > 0 and number < len(all_stocks):
+            time.sleep(request_interval)
+    if not stock_closes:
+        raise ValueError("No constituent stock close data returned")
+
+    return compute_industry_breadth(
+        constituents,
+        stock_closes,
+        start,
+        end,
+        windows=resolved_windows,
+        min_stocks=min_stocks,
+    )
+
+
 def _write_industry_close(path: Path, data: PriceData) -> None:
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
@@ -373,6 +592,20 @@ def _write_industry_amount(path: Path, data: PriceData) -> None:
 
 def _write_market_close(path: Path, data: PriceData) -> None:
     _write_industry_close(path, data)
+
+
+def _write_breadth(path: Path, data: PriceData) -> None:
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        assets = data.assets
+        writer.writerow(["date", *assets])
+        for row_index, day in enumerate(data.dates):
+            writer.writerow(
+                [
+                    day.isoformat(),
+                    *[f"{data.closes[asset][row_index]:.6f}" for asset in assets],
+                ]
+            )
 
 
 def _slice_price_data(data: PriceData, dates: list[date]) -> PriceData:
@@ -461,6 +694,107 @@ def write_real_data_files(
         benchmark_symbol=benchmark_symbol,
         market_close_path=market_path,
         market_symbols=market_symbols,
+    )
+
+
+def write_breadth_data_files(
+    output_dir: str | Path,
+    breadth_by_window: dict[int, PriceData],
+    *,
+    min_stocks: int,
+    provider: str = "akshare",
+    current_constituents: bool = True,
+) -> BreadthDataSummary:
+    if not breadth_by_window:
+        raise ValueError("breadth_by_window must not be empty")
+    windows = tuple(sorted(breadth_by_window))
+    assets = breadth_by_window[windows[0]].assets
+    for window in windows:
+        if window <= 0:
+            raise ValueError("breadth windows must be positive")
+        if breadth_by_window[window].assets != assets:
+            raise ValueError("All breadth windows must share the same industries")
+
+    common_dates = sorted(
+        set.intersection(*(set(data.dates) for data in breadth_by_window.values()))
+    )
+    if not common_dates:
+        raise ValueError("No common dates found across breadth windows")
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    paths: dict[int, Path] = {}
+    for window in windows:
+        path = output_path / f"industry_breadth{window}.csv"
+        _write_breadth(path, _slice_price_data(breadth_by_window[window], common_dates))
+        paths[window] = path
+
+    manifest_path = output_path / "breadth_manifest.json"
+    manifest = {
+        "provider": provider,
+        "industry_source": "sw_level1_current_constituents",
+        "current_constituents": current_constituents,
+        "survivor_bias_warning": (
+            "Breadth was computed from current SW index constituents. "
+            "Use historical constituent snapshots before treating this as "
+            "unbiased production research data."
+        ),
+        "start": common_dates[0].isoformat(),
+        "end": common_dates[-1].isoformat(),
+        "rows": len(common_dates),
+        "industries": len(assets),
+        "windows": list(windows),
+        "min_stocks": min_stocks,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "files": {f"industry_breadth{window}": paths[window].name for window in windows},
+    }
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, ensure_ascii=False, indent=2)
+
+    return BreadthDataSummary(
+        output_dir=output_path,
+        breadth_paths=paths,
+        manifest_path=manifest_path,
+        start=common_dates[0],
+        end=common_dates[-1],
+        rows=len(common_dates),
+        industries=len(assets),
+        windows=windows,
+        min_stocks=min_stocks,
+        current_constituents=current_constituents,
+    )
+
+
+def fetch_and_write_breadth_data(
+    output_dir: str | Path,
+    start: date,
+    end: date,
+    *,
+    industries: list[IndexInfo] | None = None,
+    windows: tuple[int, ...] = (20, 60),
+    min_stocks: int = 1,
+    adjust: str = "",
+    lookback_days: int | None = None,
+    progress: ProgressCallback | None = None,
+    request_interval: float = 0.0,
+) -> BreadthDataSummary:
+    ak = _require_akshare()
+    breadth_by_window = fetch_sw_level1_breadth_data(
+        start,
+        end,
+        ak=ak,
+        industries=industries,
+        windows=windows,
+        min_stocks=min_stocks,
+        adjust=adjust,
+        lookback_days=lookback_days,
+        progress=progress,
+        request_interval=request_interval,
+    )
+    return write_breadth_data_files(
+        output_dir,
+        breadth_by_window,
+        min_stocks=min_stocks,
     )
 
 

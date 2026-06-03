@@ -47,6 +47,55 @@ class BreadthData:
 
 
 @dataclass(frozen=True)
+class StockIndustryMap:
+    snapshots: dict[date, dict[str, str]]
+
+    @classmethod
+    def from_static(
+        cls,
+        mapping: dict[str, str],
+        *,
+        as_of: date = date.min,
+    ) -> StockIndustryMap:
+        return cls({as_of: mapping})
+
+    @property
+    def all_stocks(self) -> set[str]:
+        return {
+            stock
+            for mapping in self.snapshots.values()
+            for stock in mapping
+        }
+
+    def get_map_at(self, dt: date) -> dict[str, str]:
+        available_dates = [
+            snapshot_date
+            for snapshot_date in self.snapshots
+            if snapshot_date <= dt
+        ]
+        if not available_dates:
+            raise ValueError(
+                "No stock industry snapshot available on or before "
+                f"{dt.isoformat()}"
+            )
+        return dict(self.snapshots[max(available_dates)])
+
+    def __post_init__(self) -> None:
+        if not self.snapshots:
+            raise ValueError("StockIndustryMap requires at least one snapshot")
+        for snapshot_date, mapping in self.snapshots.items():
+            if not isinstance(snapshot_date, date):
+                raise ValueError("StockIndustryMap snapshot keys must be dates")
+            if not mapping:
+                raise ValueError(
+                    "StockIndustryMap snapshots must contain at least one mapping"
+                )
+            for stock, industry in mapping.items():
+                if not stock or not industry:
+                    raise ValueError("StockIndustryMap cannot contain blank values")
+
+
+@dataclass(frozen=True)
 class StockSelectionConfig:
     enabled: bool = False
     top_n_per_industry: int = 5

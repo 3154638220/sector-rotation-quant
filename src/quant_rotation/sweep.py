@@ -6,7 +6,14 @@ from pathlib import Path
 
 from .backtest import run_backtest
 from .decomposition import FACTOR_FIELDS, METRIC_ORDER
-from .models import BacktestResult, BreadthData, FactorWeights, PriceData, StrategyConfig
+from .models import (
+    BacktestResult,
+    BreadthData,
+    FactorWeights,
+    PriceData,
+    StockIndustryMap,
+    StrategyConfig,
+)
 
 
 DEFAULT_FACTOR_SET_NAMES = (
@@ -292,7 +299,7 @@ def run_parameter_sweep(
     market_weights: dict[str, float] | None = None,
     stock_data: PriceData | None = None,
     stock_amount_data: PriceData | None = None,
-    stock_industry_map: dict[str, str] | None = None,
+    stock_industry_map: StockIndustryMap | dict[str, str] | None = None,
     factor_set_names: tuple[str, ...] = DEFAULT_FACTOR_SET_NAMES,
     top_k_values: tuple[int, ...] = DEFAULT_TOP_K_VALUES,
     risk_off_exposures: tuple[float, ...] = DEFAULT_RISK_OFF_EXPOSURES,

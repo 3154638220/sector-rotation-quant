@@ -17,7 +17,13 @@ from .data import (
 )
 from .decomposition import run_factor_decomposition, write_factor_decomposition_reports
 from .models import BreadthData
-from .real_data import DEFAULT_MARKET_INDICES, IndexInfo, fetch_and_write_real_data, parse_date
+from .real_data import (
+    DEFAULT_MARKET_INDICES,
+    IndexInfo,
+    fetch_and_write_breadth_data,
+    fetch_and_write_real_data,
+    parse_date,
+)
 from .reports import write_reports
 from .sample_data import generate_sample_data
 from .sweep import run_parameter_sweep, write_parameter_sweep_reports
@@ -84,6 +90,58 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated market index list as NAME:SYMBOL. "
             "Use an empty string to skip market_close.csv."
+        ),
+    )
+
+    breadth = subparsers.add_parser(
+        "fetch-breadth-data",
+        help="Fetch current SW constituent stock data and compute industry breadth",
+    )
+    breadth.add_argument("--output", default="data/real", help="Output directory")
+    breadth.add_argument(
+        "--start",
+        default="2021-01-01",
+        help="Start date, YYYY-MM-DD or YYYYMMDD",
+    )
+    breadth.add_argument(
+        "--end",
+        default=date.today().isoformat(),
+        help="End date, YYYY-MM-DD or YYYYMMDD",
+    )
+    breadth.add_argument(
+        "--windows",
+        default="20,60",
+        help="Comma-separated moving-average windows, e.g. 20,60",
+    )
+    breadth.add_argument(
+        "--min-stocks",
+        type=int,
+        default=1,
+        help="Minimum stocks with enough data required for an industry/date",
+    )
+    breadth.add_argument(
+        "--adjust",
+        default="",
+        help="AKShare stock_zh_a_hist adjustment: empty, qfq, or hfq",
+    )
+    breadth.add_argument(
+        "--lookback-days",
+        type=int,
+        default=None,
+        help="Calendar days fetched before start for MA warm-up; defaults to max(window)*3",
+    )
+    breadth.add_argument(
+        "--request-interval",
+        type=float,
+        default=0.0,
+        help="Seconds to wait between AKShare requests",
+    )
+    breadth.add_argument(
+        "--industry-indexes",
+        default="",
+        help=(
+            "Optional comma-separated SW industry index list as NAME:CODE. "
+            "Defaults to all detected SW level-1 industries."
         ),
     )
 
@@ -799,6 +857,45 @@ def fetch_real_data_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def fetch_breadth_data_command(args: argparse.Namespace) -> int:
+    start = parse_date(args.start)
+    end = parse_date(args.end)
+    windows = _parse_int_tuple(args.windows, "--windows")
+    if args.lookback_days is not None and args.lookback_days < max(windows):
+        raise ValueError("--lookback-days should be at least the largest MA window")
+    industry_indexes = (
+        _parse_market_index_list(args.industry_indexes)
+        if args.industry_indexes.strip()
+        else None
+    )
+    summary = fetch_and_write_breadth_data(
+        args.output,
+        start,
+        end,
+        industries=industry_indexes,
+        windows=windows,
+        min_stocks=args.min_stocks,
+        adjust=args.adjust,
+        lookback_days=args.lookback_days,
+        progress=print,
+        request_interval=args.request_interval,
+    )
+    print(f"Breadth data written to: {summary.output_dir.resolve()}")
+    print(f"Date range: {summary.start.isoformat()} to {summary.end.isoformat()}")
+    print(f"Rows: {summary.rows}")
+    print(f"Industries: {summary.industries}")
+    print(f"Windows: {', '.join(str(window) for window in summary.windows)}")
+    for window, path in summary.breadth_paths.items():
+        print(f"MA{window} breadth: {path.resolve()}")
+    print(f"Manifest: {summary.manifest_path.resolve()}")
+    if summary.current_constituents:
+        print(
+            "Note: breadth uses current SW constituents; validate with historical "
+            "constituent snapshots before production use."
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -806,6 +903,8 @@ def main(argv: list[str] | None = None) -> int:
         return sample_data_command(args)
     if args.command == "fetch-real-data":
         return fetch_real_data_command(args)
+    if args.command == "fetch-breadth-data":
+        return fetch_breadth_data_command(args)
     if args.command == "run":
         return run_command(args)
     if args.command == "decompose":

@@ -7,6 +7,7 @@ from .models import (
     BreadthData,
     PriceData,
     RebalanceEvent,
+    StockIndustryMap,
     StrategyConfig,
 )
 from .portfolio import equal_weight_target, turnover
@@ -99,6 +100,12 @@ def _market_score(
     return None
 
 
+def _stock_map_symbols(stock_industry_map: StockIndustryMap | dict[str, str]) -> set[str]:
+    if isinstance(stock_industry_map, StockIndustryMap):
+        return stock_industry_map.all_stocks
+    return set(stock_industry_map)
+
+
 def run_backtest(
     data: PriceData,
     benchmark_closes: list[float] | None,
@@ -109,7 +116,7 @@ def run_backtest(
     market_weights: dict[str, float] | None = None,
     stock_data: PriceData | None = None,
     stock_amount_data: PriceData | None = None,
-    stock_industry_map: dict[str, str] | None = None,
+    stock_industry_map: StockIndustryMap | dict[str, str] | None = None,
 ) -> BacktestResult:
     if benchmark_closes is not None and len(benchmark_closes) != len(data.dates):
         raise ValueError("benchmark_closes length must match data dates")
@@ -127,7 +134,10 @@ def run_backtest(
             )
         if stock_data.dates != data.dates:
             raise ValueError("stock_data dates must match price data dates")
-        if not any(stock in stock_data.closes for stock in stock_industry_map):
+        if not any(
+            stock in stock_data.closes
+            for stock in _stock_map_symbols(stock_industry_map)
+        ):
             raise ValueError("stock_industry_map has no stocks in stock_data")
     if stock_amount_data is not None:
         if stock_data is None:
@@ -223,6 +233,7 @@ def run_backtest(
                     signal_index,
                     config.stock_selection,
                     stock_amount_data=stock_amount_data,
+                    signal_date=snapshot.signal_date,
                 )
                 if stock_mode and stock_data is not None
                 else industry_target_weights

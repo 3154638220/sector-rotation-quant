@@ -1,17 +1,35 @@
 from __future__ import annotations
 
+from datetime import date
+
 from .factors import simple_return, trailing_mean, trailing_volatility, zscore
-from .models import PriceData, StockSelectionConfig
+from .models import PriceData, StockIndustryMap, StockSelectionConfig
 from .portfolio import select_top_k
+
+StockIndustryMapLike = StockIndustryMap | dict[str, str]
+
+
+def _resolve_stock_industry_map(
+    stock_industry_map: StockIndustryMapLike,
+    as_of: date | None,
+) -> dict[str, str]:
+    if isinstance(stock_industry_map, StockIndustryMap):
+        if as_of is None:
+            as_of = max(stock_industry_map.snapshots)
+        return stock_industry_map.get_map_at(as_of)
+    return stock_industry_map
 
 
 def stocks_by_industry(
-    stock_industry_map: dict[str, str],
+    stock_industry_map: StockIndustryMapLike,
     available_stocks: list[str],
+    *,
+    as_of: date | None = None,
 ) -> dict[str, list[str]]:
+    mapping = _resolve_stock_industry_map(stock_industry_map, as_of)
     available = set(available_stocks)
     grouped: dict[str, list[str]] = {}
-    for stock, industry in stock_industry_map.items():
+    for stock, industry in mapping.items():
         if stock not in available:
             continue
         grouped.setdefault(industry, []).append(stock)
@@ -75,10 +93,11 @@ def compute_stock_scores(
 def stock_target_weights(
     industry_weights: dict[str, float],
     stock_data: PriceData,
-    stock_industry_map: dict[str, str],
+    stock_industry_map: StockIndustryMapLike,
     index: int,
     config: StockSelectionConfig,
     stock_amount_data: PriceData | None = None,
+    signal_date: date | None = None,
 ) -> dict[str, float]:
     if config.top_n_per_industry <= 0:
         raise ValueError("stock_top_n_per_industry must be positive")
@@ -87,7 +106,11 @@ def stock_target_weights(
     if config.max_stock_weight <= 0:
         raise ValueError("stock_max_weight must be positive")
 
-    grouped = stocks_by_industry(stock_industry_map, stock_data.assets)
+    grouped = stocks_by_industry(
+        stock_industry_map,
+        stock_data.assets,
+        as_of=signal_date or stock_data.dates[index],
+    )
     target: dict[str, float] = {}
     for industry, industry_weight in industry_weights.items():
         candidates = grouped.get(industry, [])
