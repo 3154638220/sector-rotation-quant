@@ -17,6 +17,13 @@ dependencies = []
 real-data = [
   "akshare>=1.18.0",
 ]
+dev = [
+  "pytest>=7.4",
+  "pytest-cov>=4.0",
+  "ruff>=0.4",
+  "matplotlib>=3.7",
+  "pandas>=2.0",
+]
 
 [project.scripts]
 quant-rotation = "quant_rotation.cli:main"

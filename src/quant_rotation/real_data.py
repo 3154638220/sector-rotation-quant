@@ -779,6 +779,17 @@ def compute_industry_breadth(
     return result
 
 
+def build_constituents_from_snapshot(
+    stock_map: StockIndustryMap,
+    signal_date: date,
+) -> dict[str, list[str]]:
+    mapping = stock_map.get_map_at(signal_date)
+    constituents: dict[str, list[str]] = {}
+    for stock, industry in mapping.items():
+        constituents.setdefault(industry, []).append(stock)
+    return constituents
+
+
 def fetch_sw_level1_breadth_data(
     start: date,
     end: date,
@@ -1392,3 +1403,130 @@ def fetch_and_write_real_data(
         industry_symbols={info.name: info.code for info in industry_infos},
         update_mode=update_mode,
     )
+
+
+def compute_industry_amount_zscore(
+    amount_data: PriceData,
+    window: int = 60,
+    min_periods: int | None = None,
+) -> PriceData:
+    if window < 5:
+        raise ValueError("window must be at least 5 to compute meaningful z-scores")
+    if min_periods is None:
+        min_periods = window // 2
+
+    assets = list(amount_data.assets)
+    n_dates = len(amount_data.dates)
+    result_closes: dict[str, list[float]] = {}
+
+    for asset in assets:
+        raw = amount_data.closes[asset]
+        z_series: list[float] = []
+        for i in range(n_dates):
+            lookback_start = max(0, i - window + 1)
+            lookback_end = i + 1
+            lookback = raw[lookback_start:lookback_end]
+            if len(lookback) < min_periods:
+                z_series.append(0.0)
+            else:
+                mean_val = sum(lookback) / len(lookback)
+                variance = sum((v - mean_val) ** 2 for v in lookback) / len(lookback)
+                std_val = variance ** 0.5
+                if std_val == 0:
+                    z_series.append(0.0)
+                else:
+                    z_series.append((raw[i] - mean_val) / std_val)
+        result_closes[asset] = z_series
+
+    return PriceData(dates=amount_data.dates, closes=result_closes)
+
+
+def validate_constituent_snapshot_csv(path: Path) -> list[str]:
+    issues: list[str] = []
+    if not path.exists():
+        return [f"File not found: {path}"]
+
+    required_cols = ["snapshot_date", "stock", "industry"]
+    alt_date_cols = ["date", "as_of"]
+
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            return ["CSV has no header row"]
+        columns = set(reader.fieldnames)
+        if "stock" not in columns or "industry" not in columns:
+            return ["CSV must contain 'stock' and 'industry' columns"]
+        date_col = None
+        for col in ["snapshot_date"] + alt_date_cols:
+            if col in columns:
+                date_col = col
+                break
+        if not date_col:
+            date_opts = ", ".join(["snapshot_date"] + alt_date_cols)
+            issues.append(
+                f"No date column found; expected one of: {date_opts}"
+            )
+            return issues
+
+        seen: set[tuple[str, str]] = set()
+        dates_seen: set[date] = set()
+        row_count = 0
+        for row in reader:
+            row_count += 1
+            stock = (row.get("stock") or "").strip()
+            industry = (row.get("industry") or "").strip()
+            if not stock:
+                issues.append(f"Row {row_count}: empty stock code")
+            if not industry:
+                issues.append(f"Row {row_count}: empty industry name")
+            if not stock or not industry:
+                continue
+            try:
+                dt = date.fromisoformat((row.get(date_col) or "").strip())
+            except (ValueError, TypeError):
+                issues.append(f"Row {row_count}: invalid date '{row.get(date_col)}'")
+                continue
+
+            dates_seen.add(dt)
+            key = (dt.isoformat(), stock)
+            if key in seen:
+                issues.append(f"Row {row_count}: duplicate stock {stock} on {dt}")
+            seen.add(key)
+
+        if row_count == 0:
+            issues.append("CSV has no data rows")
+
+    if not issues and not dates_seen:
+        issues.append("No valid rows found")
+
+    return issues
+
+
+def import_constituent_snapshot(
+    source_csv: Path,
+    target_csv: Path,
+    *,
+    overwrite: bool = False,
+) -> int:
+    issues = validate_constituent_snapshot_csv(source_csv)
+    if issues:
+        for issue in issues:
+            print(f"  ✗ {issue}")
+        raise ValueError(
+            f"Snapshot CSV validation failed with {len(issues)} issue(s)"
+        )
+
+    if target_csv.exists() and not overwrite:
+        raise FileExistsError(
+            f"Target already exists: {target_csv}. Use --overwrite to replace."
+        )
+
+    target_csv.parent.mkdir(parents=True, exist_ok=True)
+    content = source_csv.read_bytes()
+    target_csv.write_bytes(content)
+
+    with source_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        row_count = sum(1 for _ in reader)
+
+    return row_count

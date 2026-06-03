@@ -691,6 +691,54 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output directory for HTML report. Defaults to report-dir.",
     )
+    plot_cmd.add_argument(
+        "--wf-dir",
+        default=None,
+        help="Explicit path to walk-forward output directory "
+        "(default: probe report-dir and common subdirectories)",
+    )
+
+    signal = subparsers.add_parser(
+        "signal",
+        help="Generate next rebalance signal JSON",
+    )
+    signal.add_argument("--config", required=True, help="TOML config path")
+    signal.add_argument(
+        "--output", default=None, help="Output JSON path (default: reports/signals/signal_<date>.json)"
+    )
+
+    compute_pros = subparsers.add_parser(
+        "compute-prosperity",
+        help="Compute prosperity proxy from amount data (z-score)",
+    )
+    compute_pros.add_argument("--amount-csv", required=True,
+                             help="Path to industry_amount.csv")
+    compute_pros.add_argument("--output", required=True,
+                             help="Output CSV path for industry_prosperity.csv")
+    compute_pros.add_argument("--window", type=int, default=60,
+                             help="Rolling window for z-score (default: 60)")
+
+    hist_const = subparsers.add_parser(
+        "fetch-historical-constituents",
+        help="Validate and import historical SW constituent snapshots from CSV",
+    )
+    hist_const.add_argument("--input", required=True,
+                           help="Path to snapshot CSV (columns: snapshot_date, stock, industry)")
+    hist_const.add_argument("--output", required=True,
+                           help="Target path for validated snapshot CSV")
+    hist_const.add_argument("--overwrite", action="store_true",
+                           help="Overwrite existing target file")
+    hist_const.add_argument("--validate-only", action="store_true",
+                           help="Only validate the input CSV without copying")
+
+    align_sse = subparsers.add_parser(
+        "align-sse-benchmark",
+        help="Fetch SSE Composite Index and align to existing equity curve",
+    )
+    align_sse.add_argument("--report-dir", required=True,
+                          help="Directory containing equity_curve.csv")
+    align_sse.add_argument("--output", default=None,
+                          help="Output CSV path (default: <report-dir>/sse_composite.csv)")
     return parser
 
 
@@ -1665,6 +1713,31 @@ def fetch_stock_data_command(args: argparse.Namespace) -> int:
     return 0
 
 
+WF_SUBDIRS = [
+    "walk_forward",
+    "walk_forward_ret60_ret5",
+    "walk_forward_qtr",
+    "walk_forward_partial",
+]
+
+
+def _find_wf_csvs(
+    report_dir: Path, explicit_wf_dir: str | None
+) -> tuple[Path | None, Path | None]:
+    if explicit_wf_dir:
+        d = Path(explicit_wf_dir)
+        oos = d / "walk_forward_oos_equity.csv"
+        folds = d / "walk_forward_folds.csv"
+        return (oos if oos.exists() else None, folds if folds.exists() else None)
+
+    for candidate in [report_dir] + [report_dir / d for d in WF_SUBDIRS]:
+        oos = candidate / "walk_forward_oos_equity.csv"
+        folds = candidate / "walk_forward_folds.csv"
+        if oos.exists() and folds.exists():
+            return oos, folds
+    return None, None
+
+
 def plot_command(args: argparse.Namespace) -> int:
     report_dir = Path(args.report_dir)
     equity_path = report_dir / "equity_curve.csv"
@@ -1675,14 +1748,14 @@ def plot_command(args: argparse.Namespace) -> int:
         plot_walk_forward_folds,
         plot_risk_control_accuracy,
         plot_parameter_heatmap,
+        plot_holding_history,
     )
 
     extra_sections = ""
     has_base_plots = equity_path.exists()
 
-    wf_oos_path = report_dir / "walk_forward_oos_equity.csv"
-    wf_folds_path = report_dir / "walk_forward_folds.csv"
-    if wf_oos_path.exists() and wf_folds_path.exists():
+    wf_oos_path, wf_folds_path = _find_wf_csvs(report_dir, getattr(args, "wf_dir", None))
+    if wf_oos_path and wf_folds_path:
         try:
             eq_png, bar_png = plot_walk_forward_folds(wf_oos_path, wf_folds_path)
             extra_sections += (
@@ -1693,6 +1766,10 @@ def plot_command(args: argparse.Namespace) -> int:
                 f'<h2>WF Fold Returns</h2>'
                 f'<img src="data:image/png;base64,{b64encode(bar_png).decode()}">'
             )
+            wf_summary_csv = wf_folds_path.parent / "walk_forward_summary.csv"
+            if wf_summary_csv.exists():
+                from quant_rotation.plot import render_wf_summary_table
+                extra_sections += render_wf_summary_table(wf_summary_csv)
         except Exception as exc:
             print(f"Warning: WF fold plot skipped ({exc})")
 
@@ -1718,11 +1795,33 @@ def plot_command(args: argparse.Namespace) -> int:
         except Exception as exc:
             print(f"Warning: parameter heatmap skipped ({exc})")
 
+    rebalances_path = report_dir / "rebalances.csv"
+    if rebalances_path.exists():
+        try:
+            holdings_png = plot_holding_history(rebalances_path)
+            extra_sections += (
+                f'<h2>Holding History</h2>'
+                f'<img src="data:image/png;base64,{b64encode(holdings_png).decode()}">'
+            )
+        except Exception as exc:
+            print(f"Warning: holding history skipped ({exc})")
+
     if not has_base_plots and not extra_sections:
         print(f"Error: no plot data found in {report_dir}")
         return 1
 
     output_dir = args.output or str(report_dir)
+
+    extra_benchmarks = None
+    sse_path = report_dir / "sse_composite.csv"
+    if sse_path.exists():
+        try:
+            import csv
+            with sse_path.open("r", encoding="utf-8-sig") as h:
+                reader = csv.DictReader(h)
+                extra_benchmarks = [("上证指数", [float(r["close"]) for r in reader])]
+        except Exception:
+            pass
 
     if has_base_plots:
         annual_returns = {}
@@ -1739,6 +1838,7 @@ def plot_command(args: argparse.Namespace) -> int:
             annual_returns=annual_returns if annual_returns else None,
             holding_returns_path=holding_path if holding_path.exists() else None,
             extra_sections=extra_sections,
+            extra_benchmarks=extra_benchmarks,
         )
     else:
         out = Path(output_dir)
@@ -1760,6 +1860,168 @@ img {{ width: 100%; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); m
         html_path.write_text(html, encoding="utf-8")
 
     print(f"HTML report written to: {html_path.resolve()}")
+    return 0
+
+
+def signal_command(args: argparse.Namespace) -> int:
+    import json
+
+    (
+        app_config,
+        industry_data,
+        amount_data,
+        breadth_data,
+        valuation_data,
+        prosperity_data,
+        market_data,
+        stock_data,
+        stock_amount_data,
+        stock_industry_map,
+        benchmark_closes,
+    ) = _load_inputs(args.config)
+
+    result = run_backtest(
+        industry_data,
+        benchmark_closes,
+        app_config.strategy,
+        amount_data=amount_data,
+        breadth_data=breadth_data,
+        valuation_data=valuation_data,
+        prosperity_data=prosperity_data,
+        market_data=market_data,
+        market_weights=app_config.market_weights,
+        stock_data=stock_data,
+        stock_amount_data=stock_amount_data,
+        stock_industry_map=stock_industry_map,
+    )
+
+    if not result.rebalances:
+        print("Error: backtest produced no rebalances")
+        return 1
+
+    last = result.rebalances[-1]
+
+    signal_data = {
+        "signal_date": last.signal_date.isoformat(),
+        "next_rebalance_date": last.date.isoformat(),
+        "holdings": last.holdings,
+        "weights": last.weights,
+        "exposure": last.exposure,
+        "market_trend": last.market_trend,
+        "market_score": last.market_score,
+        "market_score_ok": last.market_score_ok,
+        "config": args.config,
+        "generated_at": date.today().isoformat(),
+    }
+
+    output_path = Path(args.output) if args.output else (
+        Path("reports/signals") / f"signal_{last.signal_date.isoformat()}.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(signal_data, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    print(f"Signal written to: {output_path.resolve()}")
+    print(f"Signal date: {last.signal_date}")
+    print(f"Next rebalance: {last.date}")
+    print(f"Holdings ({len(last.holdings)}): {', '.join(last.holdings)}")
+    print(f"Exposure: {last.exposure:.0%}")
+    return 0
+
+
+def compute_prosperity_command(args: argparse.Namespace) -> int:
+    import csv
+    from quant_rotation.data import load_wide_asset_csv
+    from quant_rotation.real_data import compute_industry_amount_zscore
+
+    raw_amount = load_wide_asset_csv(args.amount_csv, value_name="amount")
+    zscore_data = compute_industry_amount_zscore(raw_amount, window=args.window)
+
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["date", *zscore_data.assets])
+        for i, day in enumerate(zscore_data.dates):
+            writer.writerow([
+                day.isoformat(),
+                *[f"{zscore_data.closes[asset][i]:.6f}" for asset in zscore_data.assets],
+            ])
+
+    print(f"Prosperity proxy written to: {output_path.resolve()}")
+    print(f"Dates: {len(zscore_data.dates)}, Industries: {len(zscore_data.assets)}")
+    return 0
+
+
+def fetch_historical_constituents_command(args: argparse.Namespace) -> int:
+    from quant_rotation.real_data import (
+        validate_constituent_snapshot_csv,
+        import_constituent_snapshot,
+    )
+
+    source = Path(args.input)
+    issues = validate_constituent_snapshot_csv(source)
+    if issues:
+        print(f"Validation found {len(issues)} issue(s):")
+        for issue in issues:
+            print(f"  [FAIL] {issue}")
+        if not args.validate_only:
+            return 1
+    else:
+        print("Validation passed.")
+
+    if args.validate_only:
+        return 0 if not issues else 1
+
+    target = Path(args.output)
+    try:
+        rows = import_constituent_snapshot(source, target, overwrite=args.overwrite)
+        print(f"Imported {rows} rows to: {target.resolve()}")
+        return 0
+    except (ValueError, FileExistsError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+
+def align_sse_benchmark_command(args: argparse.Namespace) -> int:
+    import csv
+    import pandas as pd
+    try:
+        import akshare as ak
+    except ImportError:
+        print("Error: akshare is required. Install with: pip install akshare")
+        return 1
+
+    report_dir = Path(args.report_dir)
+    equity_path = report_dir / "equity_curve.csv"
+    if not equity_path.exists():
+        print(f"Error: equity_curve.csv not found in {report_dir}")
+        return 1
+
+    eq = pd.read_csv(equity_path)
+    start = eq["date"].iloc[0]
+    end = eq["date"].iloc[-1]
+
+    sz = ak.stock_zh_index_daily(symbol="sh000001")
+    sz["date"] = pd.to_datetime(sz["date"])
+    sz = sz.set_index("date").sort_index()
+    sz_aligned = sz.loc[start:end, "close"]
+
+    from datetime import date as dt_date
+    first_val = sz_aligned.iloc[0]
+    normalized = [float(sz_aligned.loc[d] / first_val) for d in eq["date"]]
+
+    output_path = Path(args.output) if args.output else (report_dir / "sse_composite.csv")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["date", "close"])
+        for d, v in zip(eq["date"], normalized):
+            writer.writerow([d, f"{v:.6f}"])
+
+    print(f"SSE Composite aligned to: {output_path.resolve()}")
+    print(f"Dates: {len(normalized)}, Period: {start} ~ {end}")
     return 0
 
 
@@ -1790,5 +2052,13 @@ def main(argv: list[str] | None = None) -> int:
         return validate_segments_command(args)
     if args.command == "plot":
         return plot_command(args)
+    if args.command == "signal":
+        return signal_command(args)
+    if args.command == "compute-prosperity":
+        return compute_prosperity_command(args)
+    if args.command == "fetch-historical-constituents":
+        return fetch_historical_constituents_command(args)
+    if args.command == "align-sse-benchmark":
+        return align_sse_benchmark_command(args)
     parser.error(f"Unknown command: {args.command}")
     return 2

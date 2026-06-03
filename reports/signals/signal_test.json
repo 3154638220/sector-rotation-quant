@@ -1,0 +1,24 @@
+{
+  "signal_date": "2026-05-14",
+  "next_rebalance_date": "2026-05-15",
+  "holdings": [
+    "综合",
+    "通信",
+    "电子",
+    "电力设备",
+    "煤炭"
+  ],
+  "weights": {
+    "综合": 0.2,
+    "通信": 0.2,
+    "电子": 0.2,
+    "电力设备": 0.2,
+    "煤炭": 0.2
+  },
+  "exposure": 1.0,
+  "market_trend": true,
+  "market_score": 0.08682522200638468,
+  "market_score_ok": true,
+  "config": "configs/production.toml",
+  "generated_at": "2026-06-03"
+}

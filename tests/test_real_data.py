@@ -412,6 +412,94 @@ class RealDataTests(unittest.TestCase):
         self.assertIn('"industry_universe": "sw2014"', manifest)
         self.assertIn('"行业A": "801001"', manifest)
 
+    def test_write_real_data_files_append_mode_extends_existing_file(self) -> None:
+        first_data = PriceData(
+            dates=[date(2024, 1, 2), date(2024, 1, 3)],
+            closes={"A": [100.0, 101.0], "B": [200.0, 201.0]},
+        )
+        benchmark1 = {date(2024, 1, 2): 3000.0, date(2024, 1, 3): 3010.0}
+        new_data = PriceData(
+            dates=[date(2024, 1, 4), date(2024, 1, 5)],
+            closes={"A": [102.0, 103.0], "B": [202.0, 203.0]},
+        )
+        benchmark2 = {date(2024, 1, 4): 3020.0, date(2024, 1, 5): 3030.0}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            write_real_data_files(
+                Path(tmp), first_data, benchmark1,
+                benchmark_symbol="sh000300",
+            )
+            write_real_data_files(
+                Path(tmp), new_data, benchmark2,
+                benchmark_symbol="sh000300",
+                update_mode="append",
+            )
+            loaded = load_wide_close_csv(Path(tmp) / "industry_close.csv")
+            self.assertEqual(loaded.dates, [date(2024, 1, 2), date(2024, 1, 3),
+                                            date(2024, 1, 4), date(2024, 1, 5)])
+            self.assertEqual(loaded.closes["A"], [100.0, 101.0, 102.0, 103.0])
+
+    def test_write_real_data_files_append_creates_file_if_missing(self) -> None:
+        data = PriceData(
+            dates=[date(2024, 1, 2), date(2024, 1, 3)],
+            closes={"A": [100.0, 101.0]},
+        )
+        benchmark = {date(2024, 1, 2): 3000.0, date(2024, 1, 3): 3010.0}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            write_real_data_files(
+                Path(tmp), data, benchmark,
+                benchmark_symbol="sh000300",
+                update_mode="append",
+            )
+            loaded = load_wide_close_csv(Path(tmp) / "industry_close.csv")
+            self.assertEqual(len(loaded.dates), 2)
+            self.assertIn("A", loaded.assets)
+
+    def test_write_real_data_files_append_does_not_duplicate_dates(self) -> None:
+        data3d = PriceData(
+            dates=[date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
+            closes={"A": [100.0, 101.0, 102.0]},
+        )
+        benchmark = {date(2024, 1, 2): 3000.0, date(2024, 1, 3): 3010.0,
+                     date(2024, 1, 4): 3020.0}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            write_real_data_files(Path(tmp), data3d, benchmark,
+                                  benchmark_symbol="sh000300")
+            write_real_data_files(Path(tmp), data3d, benchmark,
+                                  benchmark_symbol="sh000300",
+                                  update_mode="append")
+            loaded = load_wide_close_csv(Path(tmp) / "industry_close.csv")
+            self.assertEqual(len(loaded.dates), 6)
+            self.assertEqual(loaded.dates[0], date(2024, 1, 2))
+            self.assertEqual(loaded.dates[-1], date(2024, 1, 4))
+
+    def test_append_mode_preserves_both_industry_and_benchmark(self) -> None:
+        data1 = PriceData(
+            dates=[date(2024, 1, 2)],
+            closes={"A": [100.0]},
+        )
+        benchmark1 = {date(2024, 1, 2): 3000.0}
+        data2 = PriceData(
+            dates=[date(2024, 1, 3)],
+            closes={"A": [101.0]},
+        )
+        benchmark2 = {date(2024, 1, 3): 3010.0}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            write_real_data_files(Path(tmp), data1, benchmark1,
+                                  benchmark_symbol="sh000300")
+            write_real_data_files(Path(tmp), data2, benchmark2,
+                                  benchmark_symbol="sh000300",
+                                  update_mode="append")
+
+            _, loaded_bench = load_benchmark_csv(Path(tmp) / "benchmark_close.csv")
+            self.assertEqual(loaded_bench, [3000.0, 3010.0])
+
+            loaded_ind = load_wide_close_csv(Path(tmp) / "industry_close.csv")
+            self.assertEqual(loaded_ind.closes["A"], [100.0, 101.0])
+
 
 if __name__ == "__main__":
     unittest.main()

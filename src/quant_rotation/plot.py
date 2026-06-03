@@ -12,6 +12,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
+plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "WenQuanYi Micro Hei", "DejaVu Sans"]
+plt.rcParams["axes.unicode_minus"] = False
+
 
 def plot_equity_curve(
     dates: list[date],
@@ -19,12 +22,18 @@ def plot_equity_curve(
     equal_weight: list[float],
     benchmark: list[float] | None = None,
     title: str = "Equity Curve",
+    extra_benchmarks: list[tuple[str, list[float]]] | None = None,
 ) -> bytes:
     fig, ax = plt.subplots(figsize=(12, 5))
     ax.plot(dates, strategy, linewidth=1.2, label="Strategy", color="#1f77b4")
     ax.plot(dates, equal_weight, linewidth=0.8, label="Equal Weight", color="#2ca02c")
     if benchmark:
-        ax.plot(dates, benchmark, linewidth=0.8, label="Benchmark", color="#ff7f0e")
+        ax.plot(dates, benchmark, linewidth=0.8, label="CSI 300", color="#ff7f0e")
+    extra_colors = ["#9467bd", "#8c564b", "#e377c2", "#7f7f7f"]
+    if extra_benchmarks:
+        for i, (label, values) in enumerate(extra_benchmarks):
+            ax.plot(dates, values, linewidth=0.8, label=label,
+                    color=extra_colors[i % len(extra_colors)])
     ax.set_title(title)
     ax.set_xlabel("Date")
     ax.set_ylabel("Equity")
@@ -140,13 +149,14 @@ def write_html_report(
     annual_returns: dict[int, float] | None = None,
     holding_returns_path: str | Path | None = None,
     extra_sections: str = "",
+    extra_benchmarks: list[tuple[str, list[float]]] | None = None,
 ) -> Path:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     dates, strategy, equal_weight, benchmark = _load_equity_curve(equity_curve_path)
 
-    equity_png = plot_equity_curve(dates, strategy, equal_weight, benchmark, "Strategy vs Benchmarks")
+    equity_png = plot_equity_curve(dates, strategy, equal_weight, benchmark, "Strategy vs Benchmarks", extra_benchmarks=extra_benchmarks)
     drawdown_png = plot_drawdown(dates, strategy, "Drawdown")
 
     sections_html = ""
@@ -355,6 +365,156 @@ def plot_parameter_heatmap(
     plt.close(fig)
     return buf.getvalue()
 
+
+def render_wf_summary_table(summary_csv: str | Path) -> str:
+    from collections import defaultdict
+    sections: dict[str, dict[str, str]] = defaultdict(dict)
+    with open(summary_csv, "r", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            section = row.get("section", "")
+            name = row.get("name", "")
+            value = row.get("value", "")
+            if section and name:
+                sections[section][name] = value
+
+    metric_labels = {
+        "annualized_return": "OOS Annualized Return",
+        "sharpe_ratio": "OOS Sharpe",
+        "max_drawdown": "OOS Max Drawdown",
+        "final_equity": "OOS Final Equity",
+        "calmar_ratio": "OOS Calmar",
+    }
+    stats = ["test_mean", "test_median", "test_std"]
+
+    rows = ""
+    for metric_key, label in metric_labels.items():
+        cells = f"<td>{label}</td>"
+        for stat in stats:
+            val = sections.get(stat, {}).get(metric_key, "—")
+            try:
+                if "return" in metric_key or "drawdown" in metric_key:
+                    cells += f"<td>{float(val):.2%}</td>"
+                else:
+                    cells += f"<td>{float(val):.3f}</td>"
+            except (ValueError, TypeError):
+                cells += f"<td>{val}</td>"
+        rows += f"<tr>{cells}</tr>"
+
+    bootstrap_key = None
+    for name_key in sections.get("test_mean", {}):
+        if "bootstrap_p_positive" in name_key:
+            bootstrap_key = name_key
+            break
+    bootstrap_p = sections.get("test_mean", {}).get(bootstrap_key or "", "") if bootstrap_key else ""
+
+    folds = sections.get("summary", {}).get("folds", "—")
+    selection = sections.get("summary", {}).get("selection_metric", "—")
+
+    bootstrap_row = ""
+    if bootstrap_p:
+        try:
+            bp_val = float(bootstrap_p)
+            bootstrap_row = (
+                f'<tr><td>Bootstrap p_positive</td>'
+                f'<td colspan="3" style="text-align:center">{bp_val:.2%}</td></tr>'
+            )
+        except (ValueError, TypeError):
+            pass
+
+    return f"""<h2>Walk-Forward Summary</h2>
+<table style="border-collapse:collapse;width:100%;max-width:700px;margin:10px 0;">
+<tr style="background:#f0f0f0;"><td>Folds</td><td colspan="3" style="text-align:center">{folds}</td></tr>
+<tr style="background:#f0f0f0;"><td>Selection</td><td colspan="3" style="text-align:center">{selection}</td></tr>
+<tr style="background:#e8e8e8;"><th style="text-align:left">Metric</th><th>Mean</th><th>Median</th><th>Std</th></tr>
+{rows}
+{bootstrap_row}
+</table>"""
+
+
+def plot_holding_history(
+    rebalances_csv: str | Path,
+) -> bytes:
+    import numpy as np
+    import pandas as pd
+
+    df = pd.read_csv(rebalances_csv, parse_dates=["date"])
+    df = df[df["exposure"] > 0.001].copy()
+    if df.empty:
+        fig, ax = plt.subplots(figsize=(12, 2))
+        ax.text(0.5, 0.5, "No holdings (always risk-off)", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return buf.getvalue()
+
+    all_industries: set[str] = set()
+    holdings_matrix: list[tuple[pd.Timestamp, set[str], float]] = []
+    for _, row in df.iterrows():
+        if pd.isna(row.get("holdings")) or not str(row["holdings"]).strip():
+            continue
+        parts = str(row["holdings"]).split(";")
+        held = set()
+        for part in parts:
+            if ":" in part:
+                ind = part.split(":")[0]
+                if ind:
+                    held.add(ind)
+            elif part.strip():
+                held.add(part.strip())
+        if held:
+            holdings_matrix.append((row["date"], held, float(row["exposure"])))
+        all_industries.update(held)
+
+    if not holdings_matrix:
+        fig, ax = plt.subplots(figsize=(12, 2))
+        ax.text(0.5, 0.5, "No valid holdings data", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return buf.getvalue()
+
+    industries = sorted(all_industries)
+    n_ind = len(industries)
+    n_periods = len(holdings_matrix)
+
+    grid = np.zeros((n_ind, n_periods))
+    for j, (_, held, _) in enumerate(holdings_matrix):
+        for i, ind in enumerate(industries):
+            if ind in held:
+                grid[i, j] = 1.0
+
+    date_labels = [d.strftime("%Y-%m-%d") for d, _, _ in holdings_matrix]
+    fig_height = max(3, n_ind * 0.4)
+
+    fig, ax = plt.subplots(figsize=(max(12, n_periods * 0.4), fig_height))
+    ax.imshow(grid, aspect="auto", cmap=plt.cm.Greens, vmin=0, vmax=1, origin="upper")
+
+    ax.set_yticks(range(n_ind))
+    ax.set_yticklabels(industries, fontsize=8)
+
+    tick_step = max(1, n_periods // 15)
+    ax.set_xticks(range(n_periods))
+    ax.set_xticklabels(date_labels, rotation=45, ha="right", fontsize=7)
+    for i in range(n_periods):
+        if i % tick_step != 0:
+            ax.xaxis.get_ticklabels()[i].set_visible(False)
+
+    for j in range(n_periods):
+        for i in range(n_ind):
+            if grid[i, j] > 0:
+                ax.text(j, i, "■", ha="center", va="center",
+                        fontsize=10, color="#1a5631", alpha=0.9)
+
+    ax.set_title("Holding History (green = held)")
+    ax.set_xlabel("Rebalance Date")
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue()
 
 def _compute_drawdown_series(equity: list[float]) -> list[float]:
     peak = equity[0]

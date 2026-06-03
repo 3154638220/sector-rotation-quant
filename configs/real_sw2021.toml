@@ -1,6 +1,7 @@
 [data]
 industry_close = "../data/real_sw2021/industry_close.csv"
 industry_amount = "../data/real_sw2021/industry_amount.csv"
+industry_prosperity = "../data/real_sw2021/industry_prosperity.csv"
 benchmark_close = "../data/real_sw2021/benchmark_close.csv"
 market_close = "../data/real_sw2021/market_close.csv"
 

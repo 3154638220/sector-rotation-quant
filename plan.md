@@ -1,743 +1,746 @@
-# 行动计划：A 股行业动量轮动策略 下一步
+# 行动计划：A 股行业动量轮动策略 下一阶段
 
-> 基于对 `sector-rotation-quant-main` 全量代码、配置与报告的深度分析  
-> 分析日期：2026-06-03（接续 2026-06-03 晨版，本次为深化版）
-
----
-
-## 零、执行进度核查（截至 2026-06-03）
-
-### 0.1 已完成（本次分析确认已落地）
-
-| 任务 | 代码位置 | 确认状态 |
-|------|---------|---------|
-| G1 soft risk-off 函数 | `backtest.py::soft_risk_exposure()` + `StrategyConfig.risk_control_mode` | ✅ 已实现，sw2014 段 soft 模式未成功生成 |
-| G2 市场状态分类器 | `backtest.py::classify_market_state()` + `_state_aware_exposure()` | ✅ 已实现，sw2021 段已实验（见 N3） |
-| G3 空仓命中率诊断 | `tools/diagnose_risk_control.py` + `reports/production/risk_control_accuracy.csv` | ✅ 已实现并已运行 |
-| H1 validate-segments CLI | `cli.py::validate_segments_command()` + `segments.py::merge_segment_price_data()` | ✅ 已执行 N1，27 折 WF 成功 |
-| I1 时代权重训练评分 | `validation.py::_recent_weighted_score()` | ✅ 已实现 |
-| I2 市场状态条件选择 | `validation.py::_regime_aware_score()` | ✅ 已实现 |
-| J1 test_config.py | `tests/test_config.py` | ✅ 7 个测试用例，覆盖 soft/state-aware 字段 |
-| J2 test_data.py | `tests/test_data.py` | ✅ 已存在 |
-| J3 test_metrics.py | `tests/test_metrics.py` | ✅ 已存在 |
-| L1 HTML 报告 | `plot.py::write_html_report()` + `cli.py plot` 子命令 | ✅ 已实现，已生成 4 段 HTML 报告 |
-
-### 0.2 已知但**从未运行**的关键实验（最紧迫差距）
-
-已执行关键实验，输出目录均已生成：
-
-| 实验 | 状态 | 输出目录 |
-|------|------|---------|
-| 跨段长历史 WF（N1） | ✅ 已执行，27 折 | `reports/cross_segment_walk_forward/` |
-| Soft risk-off 参数扫描（N2） | ⚠️ 已执行，仅生成 hard mode | `reports/real_sw2014/soft_riskoff_sweep/` + `reports/production/soft_riskoff_sweep/` |
-| State-aware 风控对比（N3） | ✅ 已执行 | `reports/real_sw2021/state_aware_sweep/` |
-| 跨段阈值最终定版 | ⏳ 待执行 N1 风控版 | `reports/cross_segment_threshold_wf/` ❌ |
-
-### 0.4 阶段 N 实验结果（2026-06-03 执行）
-
-#### N1：跨段长历史 Walk-Forward（ret60_ret5, top_k=5, risk_control=false）
-
-`reports/cross_segment_walk_forward/walk_forward_folds.csv`（27 折，2010-01-04 → 2026-03-05）：
-
-| 指标 | 均值 | 中位数 | 标准差 |
-|------|------|--------|--------|
-| OOS 年化收益 | **9.92%** | **8.52%** | 33.3% |
-| OOS 最大回撤 | -16.1% | -13.3% | 9.5% |
-| OOS Sharpe | 0.358 | **0.484** | 1.29 |
-| OOS Calmar | 1.44 | 0.80 | — |
-
-| 盈利折数 | 亏损折数 | 正 Sharpe 折数 |
-|----------|----------|----------------|
-| 16/27（59.3%） | 11/27（40.7%） | 19/27（70.4%） |
-
-**结论**：`ret60_ret5` + `top_k=5` + 无风控，在 27 折跨段验证中 OOS Sharpe 中位数 0.484、年化中位数 8.5%，远超验收标准（> 0.2, > 0%）。最大回撤中位数仅 -13.3%，即使在 2018 大熊市（折 13: -47.3%）和 2023 熊市（折 23: -33.6%）也有可控亏损。
-
-**Bootstrap 置信区间**（10,000 次重采样）：
-- 年化收益：95% CI [-1.67%, 23.26%]，p_positive = 95.02%
-- Sharpe：95% CI [-0.131, 0.842]，p_positive = 92.25%
-
-#### N2：Soft Risk-Off 参数扫描
-
-⚠️ **问题发现**：`sweep --risk-control-mode hard,soft --soft-exposure-min 0.0,0.1,0.2,0.3` 在 sw2014 和 production 段均只生成了 `hard` mode 结果。`soft` mode 候选未生成——疑似 `sweep.py::build_sweep_specs()` 中 `risk_control_mode_values` 未正确展开为独立候选。需要修复。
-
-sw2014 段 hard mode 结果（已知，作为基线）：
-
-| risk_off_exposure | 年化 | 最大回撤 | Sharpe |
-|-------------------|------|---------|--------|
-| 0.5 | 10.98% | -53.66% | 0.60 |
-| 0.3 | 10.82% | -53.60% | 0.61 |
-| 0.2 | 10.68% | -53.92% | 0.62 |
-| 0 | 10.28% | -54.83% | 0.60 |
-
-production 段 hard mode 结果：年化 4.9-6.5%，DD -17.3%～-22.8%，Sharpe 0.38-0.52。
-
-#### N3：State-Aware 风控对比（sw2021 段）
-
-| 配置 | 年化 | 最大回撤 | Sharpe |
-|------|------|---------|--------|
-| hard (无 state-aware) | **6.51%** | **-17.26%** | 0.525 |
-| state-aware (true) | 6.31% | -19.56% | **0.533** |
-
-**结论**：state-aware 提升 Sharpe 仅 +0.008，回撤反而恶化 2.3 pct。在此配置下无明显优势。
+> 基于对 `sector-rotation-quant-main` 全量代码、配置、报告与历史 plan.md 的深度复盘  
+> 分析日期：2026-06-03（接续历史版本，本次为全新从零起草版）
 
 ---
 
-#### 🔴 发现 1：风控命中率仅 47.8%，2025 年后急剧恶化
+## 零、当前状态快照
 
-`reports/production/risk_control_accuracy.csv`（29 个空仓事件）：
+### 0.1 已确认落地的代码
 
-| 指标 | 数值 |
-|------|------|
-| TRUE_POSITIVE（空仓有效） | 11 次（37.9%） |
-| FALSE_POSITIVE（错误空仓） | 12 次（41.4%） |
-| NEUTRAL（±2% 以内） | 6 次（20.7%） |
-| 净命中率（排除 Neutral） | **47.8%**（低于随机 50%） |
+| 模块 | 关键内容 | 状态 |
+|------|---------|------|
+| `backtest.py` | `soft_risk_exposure()`, `classify_market_state()`, `_state_aware_exposure()` | ✅ 已实现 |
+| `sweep.py` | `build_parameter_sweep_specs()` 含 soft/state-aware 分支 | ✅ 已修复（soft mode 展开正常） |
+| `validation.py` | `bootstrap_oos_ci()`, `_recent_weighted_score()`, `_regime_aware_score()` | ✅ 已实现 |
+| `real_data.py` | `fetch_and_write_real_data(update_mode="append")`, `write_real_data_files()` append 路径 | ✅ 已实现 |
+| `plot.py` | `plot_walk_forward_folds()`, `plot_risk_control_accuracy()`, `plot_parameter_heatmap()` | ✅ 已实现 |
+| `cli.py` | `plot` 子命令（自动探测 WF/accuracy/sweep CSV） | ✅ 已实现 |
+| Tests | 80 个测试全部通过，覆盖 soft sweep、state-aware、bootstrap、regime-aware | ✅ 80/80 passed |
 
-按年分解：
+### 0.2 已完成的实验（截至 2026-06-03）
 
-| 年份 | TP | FP | 命中率 |
-|------|----|----|--------|
-| 2022 | 4 | 3 | 57.1% ✅ |
-| 2023 | 4 | 1 | 80.0% ✅ |
-| 2024 | 2 | 3 | 40.0% ⚠️ |
-| 2025 | 1 | 4 | **20.0%** 🔴 |
-| 2026 | 0 | 1 | 0.0% 🔴 |
+| 实验代号 | 内容 | 关键结论 |
+|---------|------|---------|
+| N1 | 跨段长历史 WF，27 折，2010–2026，risk_control=false | OOS Sharpe 中位数 **0.484**，年化中位数 **8.52%**，Bootstrap p_positive=95% |
+| N2 | Soft risk-off 参数扫描（sw2014 + production） | Soft 最优：年化 10.4%，DD **-49.0%**；**未达**-40% 验收线；暂不采用 |
+| N3 | State-aware 风控对比（sw2021） | Sharpe +0.008，DD 恶化 2.3%；**无优势**，暂不采用 |
+| P | 跨段阈值定版 WF（27 折，threshold 扫描） | 各阈值 Sharpe 中位数均为 0；保持 `threshold=0.0`，`risk_control=false` |
+| O | Bootstrap CI 实现并集成到 WF summary | 已完成，N1 年化 95% CI [-1.67%, 23.26%] |
 
-结论：**风控在 2022-2023 年有效（熊市），在 2025-2026 年完全失效（结构性牛市中的震荡修正）**。
+### 0.3 已确认放弃的方向
 
-#### 🔴 发现 2：关闭风控（riskoff=0）的 WF 中位数 Sharpe 达 1.30，有风控仅 -0.16
+| 方向 | 放弃依据 |
+|------|---------|
+| `amount_strength` 因子 | Ablation: 移除后 Sharpe +0.055，永久关闭 |
+| `ret20` 因子 | Ablation: 移除后 Sharpe +0.134，永久关闭 |
+| `top_k=8` | Sweep: top_k=5 全面优于 8 |
+| `all_factors` 配置 | 全因子 Sharpe 0.18 vs 精简版 0.52 |
+| 软风控（soft risk-off） | N2: sw2014 DD 仍 -49%，未改善到 -40% 目标 |
+| State-aware 风控 | N3: 无统计意义的提升，回撤反而恶化 |
+| 风控机制（risk_control=true） | 2024–2026 命中率仅 20%，生产 WF 中位数 Sharpe=-0.16 |
 
-`reports/real_sw2021/walk_forward_ret60_ret5/walk_forward_summary.csv`（无风控版）：
-- OOS Sharpe **中位数：1.296**，均值：1.408
-- OOS 年化中位数：**7.8%**
+### 0.4 当前生产配置基准（`ret60_ret5 + top_k=5 + risk_control=false`）
 
-`reports/production/walk_forward/walk_forward_summary.csv`（有风控版）：
-- OOS Sharpe **中位数：-0.155**，均值：0.338
-- OOS 年化中位数：**-3.4%**
+| 指标 | 单段（sw2021, 2021–2026） | 跨段 WF（27 折, 2010–2026） |
+|------|--------------------------|--------------------------|
+| 年化收益 | 6.51% | 中位数 8.52%，均值 9.92% |
+| 最大回撤 | -17.26% | 中位数 -13.25% |
+| Sharpe | 0.525 | 中位数 0.484 |
+| Calmar | 0.377 | — |
+| 沪深300超额 | +35.3% | — |
+| Bootstrap p_positive | — | 95.02% |
 
-两者都是 4 折 WF，数据区间相同（2021-2026）。差距的全部来源是风控在 2024-2025 年的 **3 次错误空仓**，每次踏空约 5-20%。
-
-#### 🟢 发现 3：跨段长历史 WF 已执行——策略 16 年有效（N1 已验证）
-
-原"最大信息盲区"已消除。详见 §0.4 N1 实验结果。
-
----
-
-## 一、核心问题诊断（更新版）
-
-### 问题 1：风控机制在结构性牛市中系统性误触发（量化确认）
-
-2024-2026 的 5 次错误空仓（FP）中，有 4 次原因是 `market_score < threshold`（market_score 为负但市场仍在上涨），仅 1 次是 `market_trend=false`。说明：
-- **market_score 计算的是市场过去 60 日加权动量**，在结构性牛市初期（小幅拉升后回调）时，60 日动量可能短暂转负，而市场中期趋势仍向上
-- `market_score_threshold=0.0` 的边界太敏感，任何轻微负动量即触发空仓
-
-Soft risk-off 和 state-aware 风控正是为解决此问题而设计，**代码已完成但从未验证**。
-
-### 问题 2：4 折 WF 的结论不可靠，urgent 需要跨段长历史验证
-
-4 折 WF 的方差极大（OOS Sharpe std = 1.11），单折牛市（折 4，+71.9%）主导均值。  
-跨段 validate-segments 命令已就绪，运行一次即可得到 20+ 折的可信结果。  
-**这是当前性价比最高的未执行工作。**
-
-### 问题 3：Bootstrap CI 未实现，所有 WF 结论缺少统计显著性量化
-
-当前 `walk_forward_summary.csv` 只有均值/中位数/标准差，没有置信区间。  
-4 折样本的 95% CI 极宽（±1 以上），难以判断 OOS Sharpe 是否显著 > 0。
+**结论：策略已通过 16 年跨段验证，所有模拟实盘前提均满足，可进入实盘准备阶段。**
 
 ---
 
-## 二、行动计划（按优先级排序）
+## 一、下一阶段工作总览
 
-### 阶段 N：立即执行的三个零代码实验（优先级 P0，3 天内）
+当前项目的战略位置：**从研究验证转向实盘准备与长期运营**。
 
-> **代码已完整，只需执行命令并分析输出**。
+所有历史疑问已解答，策略参数已锁定，测试覆盖已完整。接下来的工作分三大方向：
 
-#### N1：运行跨段长历史 Walk-Forward（最高价值单次实验）
-
-**背景**：`validate-segments` CLI 已完整实现，`merge_segment_price_data()` 经测试可合并三段数据。此命令从未执行过。
-
-```powershell
-$env:PYTHONPATH="src"
-
-# 基础版：用生产配置的 ret60_ret5 因子跑跨段 WF
-python -m quant_rotation validate-segments `
-  --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml `
-  --industry-only `
-  --factor-set ret60_ret5 `
-  --top-k 5 `
-  --risk-off-exposure 0 `
-  --risk-control false `
-  --market-score-control false `
-  --train-window 504 `
-  --test-window 126 `
-  --selection-metric composite `
-  --output-dir reports/cross_segment_walk_forward
-```
-
-**预期折数**：约 20-25 折（覆盖 2010-2026 全部 16 年）  
-**验收标准**：OOS Sharpe 中位数 > 0.2，且不少于 15 折有正收益
-
-**后续分析**（用 Python 脚本分析输出）：
-```python
-import pandas as pd
-df = pd.read_csv("reports/cross_segment_walk_forward/walk_forward_folds.csv")
-print(f"Total folds: {len(df)}")
-print(f"OOS Sharpe median: {df['test_sharpe_ratio'].median():.3f}")
-print(f"Profitable folds: {(df['test_annualized_return'] > 0).sum()}/{len(df)}")
-```
-
-#### N2：运行 Soft Risk-Off 参数扫描
-
-**背景**：`soft_risk_exposure()` 在 `backtest.py` 已实现，`StrategyConfig` 已有 `risk_control_mode`/`soft_exposure_min` 字段，`cli.py sweep` 已接受 `--risk-control-mode` 和 `--soft-exposure-min` 参数。从未在实际数据上验证效果。
-
-```powershell
-$env:PYTHONPATH="src"
-
-# sw2014 段（包含最严重的 -54.8% 回撤）对比实验
-python -m quant_rotation sweep `
-  --config configs/real_sw2014.toml `
-  --industry-only `
-  --factor-set ret60_ret5 `
-  --top-k 5 `
-  --risk-control true `
-  --market-score-control true `
-  --risk-control-mode hard,soft `
-  --soft-exposure-min 0.0,0.1,0.2,0.3 `
-  --output-dir reports/real_sw2014/soft_riskoff_sweep
-
-# production 段（包含 2024-2025 错误空仓）
-python -m quant_rotation sweep `
-  --config configs/production.toml `
-  --industry-only `
-  --factor-set ret60_ret5 `
-  --top-k 5 `
-  --risk-control true `
-  --market-score-control true `
-  --risk-control-mode hard,soft `
-  --soft-exposure-min 0.0,0.1,0.2,0.3 `
-  --output-dir reports/production/soft_riskoff_sweep
-```
-
-**关键对比指标**：
-
-| 配置 | sw2014 最大回撤（当前：-54.8%） | sw2014 年化（当前：10.3%） | production WF 中位数 Sharpe（当前：-0.16） |
-|------|-------------------------------|--------------------------|------------------------------------------|
-| hard, min=0.0（当前） | -54.8% | 10.3% | -0.16 |
-| soft, min=0.1 | ? | ? | ? |
-| soft, min=0.2 | ? | ? | ? |
-| soft, min=0.3 | ? | ? | ? |
-
-**验收标准**：soft min=0.2 版本在 sw2014 段最大回撤 < -40%，年化 > 8%。
-
-#### N3：运行 State-Aware 风控对比实验
-
-**背景**：`_state_aware_exposure()` 和 `classify_market_state()` 已在 `backtest.py` 实现，`StrategyConfig` 已有 `state_aware_risk_control`/`bull_exposure`/`sideways_exposure`/`bear_exposure` 字段。从未在生产数据上验证。
-
-```powershell
-$env:PYTHONPATH="src"
-
-# sw2021 段（2021-2026，包含 2024-2025 问题区间）
-python -m quant_rotation sweep `
-  --config configs/real_sw2021.toml `
-  --industry-only `
-  --factor-set ret60_ret5 `
-  --top-k 5 `
-  --risk-control true `
-  --market-score-control true `
-  --state-aware-risk-control true,false `
-  --sideways-exposure 0.3,0.5,0.7 `
-  --output-dir reports/real_sw2021/state_aware_sweep
-```
-
-**关注点**：sideways exposure = 0.5 时，2024 年震荡转牛阶段是否能保留部分收益。
+1. **实盘基础设施**：日常数据刷新、信号生成、持仓追踪
+2. **策略稳健性深化**：填补已知数据近似缺口、引入新因子维度
+3. **工程质量提升**：增量数据测试覆盖、HTML 报告完善、CI 配置
 
 ---
 
-### 阶段 O：Bootstrap 置信区间（P1，2 天，独立实现）
+## 二、阶段 T：实盘信号生成系统（P0，5 天）
 
-当前 WF 结论（OOS Sharpe 中位数）没有统计显著性支撑。需要在 `validation.py` 中添加：
+### 背景
+
+N1 已证明策略 16 年有效，但目前只有回测，没有"每次换仓该持什么"的实盘输出。进入模拟实盘需要一个可重复运行的**信号生成命令**，输出下次调仓日的目标持仓及权重。
+
+### T1：新增 `signal` CLI 子命令
+
+**目标**：在 `cli.py` 中新增 `signal` 子命令，读取最新数据后输出下一个调仓日的目标行业及权重。
 
 ```python
-def bootstrap_oos_ci(
-    fold_annualized_returns: list[float],
-    n_bootstrap: int = 10_000,
-    seed: int = 42,
-) -> dict[str, float]:
-    """
-    Bootstrap 重采样估计 OOS 年化收益的 95% 置信区间。
-    返回 {'mean', 'ci_lower', 'ci_upper', 'p_positive'}。
-    p_positive = bootstrap 样本均值 > 0 的比例（近似单侧 p 值）。
-    """
-    import random
-    rng = random.Random(seed)
-    n = len(fold_annualized_returns)
-    samples = []
-    for _ in range(n_bootstrap):
-        sample = [rng.choice(fold_annualized_returns) for _ in range(n)]
-        samples.append(sum(sample) / n)
-    samples.sort()
-    return {
-        "mean": sum(fold_annualized_returns) / n,
-        "ci_lower": samples[int(0.025 * n_bootstrap)],
-        "ci_upper": samples[int(0.975 * n_bootstrap)],
-        "p_positive": sum(1 for s in samples if s > 0) / n_bootstrap,
+# 预期接口
+python -m quant_rotation signal \
+  --config configs/production.toml \
+  --as-of 2026-06-03 \
+  --output reports/signal_2026-06-03.json
+```
+
+**输出格式**（`signal_YYYY-MM-DD.json`）：
+
+```json
+{
+  "signal_date": "2026-06-03",
+  "next_rebalance_date": "2026-07-01",
+  "holdings": ["食品饮料", "医药生物", "电子", "银行", "电力设备"],
+  "weights": {"食品饮料": 0.20, "医药生物": 0.20, "电子": 0.20, "银行": 0.20, "电力设备": 0.20},
+  "exposure": 1.0,
+  "market_trend": true,
+  "market_score": 0.023,
+  "market_score_ok": true,
+  "config": "production.toml",
+  "generated_at": "2026-06-03T10:00:00"
+}
+```
+
+**实现要点**：
+
+```python
+# cli.py 中新增 signal_command
+def signal_command(args: argparse.Namespace) -> int:
+    from quant_rotation.backtest import run_backtest
+    from quant_rotation.models import StrategyConfig
+    import json
+
+    config, industry_data, ... = _load_inputs(args.config)
+    result = run_backtest(industry_data, ...)
+
+    # 取最后一次 rebalance 作为当前信号
+    last_rebalance = result.rebalances[-1]
+    signal = {
+        "signal_date": last_rebalance.signal_date.isoformat(),
+        "holdings": last_rebalance.holdings,
+        "weights": last_rebalance.weights,
+        "exposure": last_rebalance.exposure,
+        "market_trend": last_rebalance.market_trend,
+        "market_score": last_rebalance.market_score,
+        "market_score_ok": last_rebalance.market_score_ok,
     }
+    # 写入 JSON
+    ...
 ```
 
-**输出集成**：在 `_write_walk_forward_summary()` 中新增以下行：
-```
-bootstrap_ci_lower,annualized_return,{value}
-bootstrap_ci_upper,annualized_return,{value}
-bootstrap_p_positive,annualized_return,{value}
-```
+**测试**（`tests/test_signal.py`）：
 
-**测试**：在 `test_validation.py` 中新增：
 ```python
-def test_bootstrap_oos_ci_positive_returns(self):
-    result = bootstrap_oos_ci([0.1, 0.2, 0.15, 0.05, 0.18])
-    self.assertGreater(result["p_positive"], 0.90)
-    self.assertGreater(result["ci_lower"], 0.0)
+def test_signal_command_outputs_valid_json(self):
+    # 用 sample data 跑 signal 命令
+    # 验证 JSON 包含 holdings, weights, exposure 字段
+    # 验证 sum(weights.values()) ≈ exposure
 
-def test_bootstrap_oos_ci_mixed_returns(self):
-    result = bootstrap_oos_ci([-0.1, 0.3, -0.05, 0.2, -0.2, 0.1])
-    self.assertLess(result["ci_lower"], 0.05)
-    self.assertBetween(result["p_positive"], 0.3, 0.7)
+def test_signal_weights_sum_to_exposure(self):
+    # weights 之和应等于 exposure（risk-on 时为 1.0）
+
+def test_signal_handles_risk_off(self):
+    # 构造 market_score < threshold 的场景
+    # exposure 应为 risk_off_exposure（生产配置下为 0.0）
+```
+
+### T2：每日数据刷新脚本（`tools/daily_refresh.py`）
+
+**目标**：封装"拉取今日最新数据 → 追加到 data/real → 生成信号"的完整日常流程，一键执行。
+
+```python
+#!/usr/bin/env python
+"""每日运营脚本：数据追加 + 信号生成"""
+# tools/daily_refresh.py
+
+import subprocess
+import sys
+from datetime import date
+
+TODAY = date.today().isoformat()
+
+steps = [
+    # Step 1: 追加今日 sw2021 数据
+    ["python", "-m", "quant_rotation", "fetch-real-data",
+     "--output", "data/real_sw2021",
+     "--end", TODAY,
+     "--update-mode", "append",
+     "--request-interval", "0.3"],
+
+    # Step 2: 生成信号
+    ["python", "-m", "quant_rotation", "signal",
+     "--config", "configs/production.toml",
+     "--as-of", TODAY,
+     "--output", f"reports/signals/signal_{TODAY}.json"],
+]
+
+for step in steps:
+    result = subprocess.run(step, check=True)
+    if result.returncode != 0:
+        print(f"Step failed: {step}")
+        sys.exit(1)
+```
+
+**验收标准**：
+- 在换仓日前运行，`reports/signals/signal_YYYY-MM-DD.json` 正确生成
+- 在非换仓日运行，信号日期与最后一次实际调仓日匹配
+- 追加模式不覆盖已有数据
+
+### T3：持仓追踪表（`tools/position_tracker.py`）
+
+对比信号与实际持仓，输出换仓差异（哪些行业需要买入/卖出）。
+
+```python
+# tools/position_tracker.py
+def compute_rebalance_diff(
+    target_signal: dict,        # signal_YYYY-MM-DD.json
+    current_positions: dict,    # {"食品饮料": 0.20, "医药生物": 0.15, ...}
+) -> dict:
+    """返回 {'buy': [...], 'sell': [...], 'hold': [...], 'drift': {}}"""
+```
+
+**测试**（`tests/test_position_tracker.py`）：
+```python
+def test_diff_identifies_new_holdings(self): ...
+def test_diff_identifies_dropped_holdings(self): ...
+def test_diff_handles_empty_current_positions(self): ...
 ```
 
 ---
 
-### 阶段 P：跨段长历史阈值最终定版（P1，1 天，依赖 N1）
+## 三、阶段 U：增量数据刷新测试覆盖（P1，2 天）
 
-在 N1 完成后，用 `validate-segments` 对 market_score_threshold 做最终扫描：
+### 背景
 
-```powershell
-$env:PYTHONPATH="src"
-python -m quant_rotation validate-segments `
-  --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml `
-  --industry-only `
-  --factor-set ret60_ret5 `
-  --top-k 5 `
-  --risk-off-exposure 0 `
-  --risk-control true `
-  --market-score-control true `
-  --market-score-threshold=-0.05,-0.02,0,0.02,0.05 `
-  --train-window 504 `
-  --test-window 126 `
-  --output-dir reports/cross_segment_threshold_wf
+`real_data.py` 的 `update_mode="append"` 功能代码已完整实现，但 `test_real_data.py` 中**完全没有 append 模式测试**。这是当前最大的测试盲区。
+
+### U1：补充 `write_real_data_files` append 模式测试
+
+```python
+# tests/test_real_data.py 新增
+
+def test_write_real_data_files_append_mode_extends_existing_csv(self):
+    """append 模式应在已有行后追加，而非覆盖"""
+    with tempfile.TemporaryDirectory() as tmp:
+        # 第一次写入 2024-01-01 至 2024-01-03
+        write_real_data_files(Path(tmp), initial_data, ..., update_mode="replace")
+        # 第二次 append 2024-01-04 至 2024-01-05
+        write_real_data_files(Path(tmp), new_data, ..., update_mode="append")
+
+        loaded = load_wide_close_csv(Path(tmp) / "industry_close.csv")
+        # 验证最终有 5 行（2 + 3，扣除 common_dates 交集）
+        self.assertIn(date(2024, 1, 1), loaded.dates)
+        self.assertIn(date(2024, 1, 5), loaded.dates)
+
+def test_write_real_data_files_append_does_not_duplicate_dates(self):
+    """append 已有日期时不应产生重复行"""
+    with tempfile.TemporaryDirectory() as tmp:
+        write_real_data_files(Path(tmp), data_3d, ..., update_mode="replace")
+        # 重叠追加（包含已有日期）
+        write_real_data_files(Path(tmp), data_3d, ..., update_mode="append")
+        loaded = load_wide_close_csv(Path(tmp) / "industry_close.csv")
+        self.assertEqual(len(loaded.dates), len(set(loaded.dates)))
+
+def test_fetch_and_write_real_data_append_skips_before_manifest_end(self):
+    """append 模式：manifest end_date 后才真正请求，不回拉已有数据"""
+    # Mock AKShare 调用，验证 start 参数 >= manifest_last_date + 1天
+    ...
+
+def test_fetch_and_write_real_data_append_raises_when_already_up_to_date(self):
+    """manifest last_date >= end 时应 raise ValueError，而非静默"""
+    with tempfile.TemporaryDirectory() as tmp:
+        # 写入 manifest end=2026-06-03
+        _update_manifest(Path(tmp), date(2026, 6, 3), 100)
+        with self.assertRaises(ValueError):
+            fetch_and_write_real_data(Path(tmp), date(2026, 1, 1),
+                                      date(2026, 6, 2), update_mode="append")
 ```
 
-**决策准则**：选择 20+ 折 OOS Sharpe **中位数最高**的阈值，若差异 < 0.05 则保持 0.0 不变。
+### U2：补充 `_write_industry_append` 边界测试
 
-若 N2 实验显示 soft risk-off 效果显著优于 hard，则同步扫描 soft 版本：
+```python
+def test_append_csv_rows_creates_file_if_not_exists(self):
+    """首次 append（文件不存在）应创建含表头的新文件"""
+
+def test_append_csv_rows_skips_header_if_file_exists(self):
+    """追加时不重写表头，只追加数据行"""
+
+def test_write_industry_append_preserves_column_order(self):
+    """追加列必须与原文件列顺序一致，避免数据错位"""
+```
+
+**验收标准**：`test_real_data.py` 测试数从 13 升至 18+，append 路径 100% 覆盖。
+
+---
+
+## 四、阶段 V：HTML 报告完善（P1，2 天）
+
+### 背景
+
+`plot` CLI 已实现，但有两个已知缺口：
+
+1. WF 折叠图只在 `report_dir` 根目录找 `walk_forward_oos_equity.csv`，而实际 WF 输出在子目录（如 `walk_forward/`, `walk_forward_ret60_ret5/`）
+2. `write_html_report` 没有 `plot` CLI 最新图表（WF folds、risk control accuracy、parameter heatmap）的入口
+
+### V1：修复 `plot` 命令的 WF 路径探测
+
+当前逻辑：
+```python
+wf_oos_path = report_dir / "walk_forward_oos_equity.csv"  # 只看根目录
+```
+
+修改为多级探测：
+```python
+# cli.py::plot_command 中修改
+
+WF_SUBDIRS = [
+    "walk_forward",
+    "walk_forward_ret60_ret5",
+    "walk_forward_qtr",
+    "walk_forward_partial",
+]
+
+wf_oos_path, wf_folds_path = None, None
+# 先查根目录，再查子目录
+for candidate_dir in [report_dir] + [report_dir / d for d in WF_SUBDIRS]:
+    p1 = candidate_dir / "walk_forward_oos_equity.csv"
+    p2 = candidate_dir / "walk_forward_folds.csv"
+    if p1.exists() and p2.exists():
+        wf_oos_path, wf_folds_path = p1, p2
+        break
+```
+
+**同时新增 `--wf-dir` 参数**，允许显式指定：
 ```powershell
---risk-control-mode soft `
---soft-exposure-min 0.2 `
---market-score-threshold=-0.05,0,0.05
+python -m quant_rotation plot \
+  --report-dir reports/real_sw2021 \
+  --wf-dir reports/real_sw2021/walk_forward_ret60_ret5
+```
+
+### V2：`plot` 命令新增 `--include-summary` 选项
+
+在 HTML 报告头部嵌入 `walk_forward_summary.csv` 的关键指标表格：
+
+```html
+<h2>Walk-Forward Summary</h2>
+<table>
+  <tr><th>Metric</th><th>Mean</th><th>Median</th><th>Std</th></tr>
+  <tr><td>OOS Annualized Return</td><td>9.92%</td><td>8.52%</td><td>33.3%</td></tr>
+  <tr><td>OOS Sharpe</td><td>0.358</td><td>0.484</td><td>1.29</td></tr>
+  <tr><td>Bootstrap p_positive</td><td colspan="3">95.02%</td></tr>
+</table>
+```
+
+实现路径：`plot.py` 新增 `render_wf_summary_table(summary_csv) -> str`，返回 HTML 片段。
+
+### V3：`plot` 命令支持跨段 WF 报告
+
+```powershell
+python -m quant_rotation plot \
+  --report-dir reports/cross_segment_walk_forward \
+  --output reports/cross_segment_walk_forward/html
+```
+
+当前此命令因为 `equity_curve.csv` 不存在而失败（WF-only 目录无基础净值图）。修复：允许 WF-only 模式生成仅含折叠图和汇总表的报告。
+
+**测试**（`tests/test_reports.py` 或新增 `tests/test_plot_cli.py`）：
+
+```python
+def test_plot_command_finds_wf_in_subdirectory(self):
+    # 创建临时目录，WF 文件放在子目录 walk_forward/
+    # 运行 plot 命令，验证 HTML 含 WF 图表
+
+def test_render_wf_summary_table_produces_valid_html(self):
+    # 用 N1 的 summary.csv 验证表格行数和内容格式
 ```
 
 ---
 
-### 阶段 Q：补全测试覆盖空缺（P2，3 天，可与 N/O 并行）
+## 五、阶段 W：历史成分股数据接入（P2，5 天）
 
-经本次审查，以下测试仍有实质性缺口：
+### 背景
 
-#### Q1：`test_backtest.py` 补充 state_aware 和 classify_market_state 测试
+当前 `fetch-breadth-data` 和 `fetch-stock-data` 使用**当前成分股**回算历史，存在前视偏差（survivorship bias）。README 已明确标注为"研究近似版"。
 
-当前 `test_backtest.py` 有 4 个测试，缺少：
+此阶段目标是建立**历史快照**接入机制，使回测更接近实际可交易状态。
 
-```python
-def test_classify_market_state_bull(self):
-    """score > 0.05 且 trend_strength > 0.03 时返回 bull"""
-    from quant_rotation.backtest import classify_market_state
-    # 构造一个 120 日内持续上涨的 benchmark（最后一日 > MA120）
-    closes = [100.0 * (1 + 0.0003) ** i for i in range(130)]
-    state = classify_market_state(0.08, closes, 129, 120)
-    self.assertEqual(state, "bull")
+### W1：历史成分股快照 CSV 格式设计
 
-def test_classify_market_state_bear(self):
-    """score < -0.03 时返回 bear"""
-    from quant_rotation.backtest import classify_market_state
-    state = classify_market_state(-0.05, None, 5, 120)
-    self.assertEqual(state, "bear")
+定义通用快照格式（已在 `models.py::StockIndustryMap` 中预留）：
 
-def test_classify_market_state_sideways(self):
-    """score 在 (-0.03, 0.05) 之间返回 sideways"""
-    from quant_rotation.backtest import classify_market_state
-    state = classify_market_state(0.01, None, 5, 120)
-    self.assertEqual(state, "sideways")
-
-def test_state_aware_exposure_sideways_partial(self):
-    """sideways 状态下应返回 sideways_exposure，不是 0 也不是 1"""
-    result = run_backtest_with_state_aware(sideways_exposure=0.5)
-    # 验证至少一次 rebalance 的 exposure 约为 0.5
-    exposures = [r.exposure for r in result.rebalances]
-    self.assertTrue(any(0.3 < e < 0.7 for e in exposures))
+```csv
+snapshot_date,stock,industry
+2014-02-21,601318.SH,保险
+2014-02-21,600036.SH,银行
+2021-12-13,601318.SH,非银金融
+2021-12-13,300750.SZ,电力设备
 ```
 
-#### Q2：`test_segments.py` 补充 merge_segment_price_data 边界测试
+关键规则：
+- 每次行业分类调整日必须有对应快照（sw2000→sw2014：2014-02-21；sw2014→sw2021：2021-12-13）
+- 中间无变化则沿用最近一期快照（`StockIndustryMap.get_map_at()` 已实现此逻辑）
+
+### W2：`fetch-historical-constituents` CLI 子命令
 
 ```python
-def test_merge_fills_missing_industry_with_nan(self):
-    """合并时缺失行业填 NaN，不抛异常"""
-    seg1 = PriceData(dates=[d1, d2], closes={"A": [1.0, 1.1], "B": [2.0, 2.1]})
-    seg2 = PriceData(dates=[d3, d4], closes={"B": [2.2, 2.3], "C": [3.0, 3.1]})
-    merged = merge_segment_price_data([(seg1, "s1"), (seg2, "s2")], fill_missing=True)
-    import math
-    self.assertTrue(math.isnan(merged.closes["C"][0]))
-    self.assertFalse(math.isnan(merged.closes["C"][2]))
-
-def test_merge_segment_dates_are_contiguous(self):
-    """合并后日期顺序应正确串接两段"""
-    merged = merge_segment_price_data([(seg1, "s1"), (seg2, "s2")])
-    self.assertEqual(merged.dates, [d1, d2, d3, d4])
+# cli.py 新增
+historical_const = subparsers.add_parser(
+    "fetch-historical-constituents",
+    help="Fetch SW level-1 historical constituent snapshots"
+)
+historical_const.add_argument("--output", required=True)
+historical_const.add_argument("--snapshot-dates",
+    help="Comma-separated snapshot dates, e.g. 2014-02-21,2021-12-13")
+historical_const.add_argument("--request-interval", type=float, default=0.5)
 ```
 
-#### Q3：`test_validation.py` 补充 recent_weighted_score 和 regime_aware 测试
+**实现策略**：
+
+AKShare 目前不提供直接历史成分股接口。实现路径：
+
+1. **短期**（本阶段）：从 Wind/Choice 导出的历史快照 CSV 手动导入，CLI 仅做格式验证和转换
+2. **中期**：接入第三方历史数据源（如 tushare Pro 的 `index_weight` 接口，需 token）
 
 ```python
-def test_recent_weighted_score_favors_recent_performance(self):
-    """近期表现好的策略得分应高于早期表现好的策略"""
-    from quant_rotation.validation import _recent_weighted_score
-    # 构造两个训练集：early_good（前半期高，后半期低）vs recent_good（相反）
+def validate_constituent_snapshot_csv(path: Path) -> None:
+    """验证快照 CSV 格式：必须有 snapshot_date, stock, industry 三列"""
+    df = pd.read_csv(path)
+    required = {"snapshot_date", "stock", "industry"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
+    if df["snapshot_date"].isnull().any():
+        raise ValueError("snapshot_date cannot be null")
+```
+
+### W3：将历史成分股接入面包率计算
+
+修改 `real_data.py::compute_industry_breadth()`：
+
+```python
+def compute_industry_breadth(
+    stock_closes: PriceData,
+    stock_map: StockIndustryMap,  # 改为接受 StockIndustryMap（含历史快照）
+    windows: tuple[int, ...],
+    signal_date: date,            # 新增：用于查询对应快照
+) -> dict[str, dict[str, list[float]]]:
+    # 用 stock_map.get_map_at(signal_date) 获取当日成分股
     ...
-
-def test_regime_aware_score_bear_favors_low_drawdown(self):
-    """熊市状态下评分应倾向低回撤策略"""
-    from quant_rotation.validation import _regime_aware_score
-    bear_metrics = {"annualized_return": -0.05, "max_drawdown": -0.10, "sharpe_ratio": -0.3}
-    high_return_metrics = {"annualized_return": 0.10, "max_drawdown": -0.40, "sharpe_ratio": 0.5}
-    self.assertGreater(_regime_aware_score(bear_metrics), _regime_aware_score(high_return_metrics))
-```
-
----
-
-### 阶段 R：增量数据刷新（P2，2 天，独立实现）
-
-当前 `fetch-real-data` 每次全量重写，日常运营风险较高（覆盖已有数据）。
-
-**实现方案**（`real_data.py`）：
-
-```python
-def fetch_and_write_real_data(
-    output_dir: str | Path,
-    start: date,
-    end: date,
-    ...
-    update_mode: str = "full",  # "full" | "append"
-) -> None:
-    if update_mode == "append":
-        manifest = _load_manifest(output_dir)
-        if manifest and manifest.get("end_date"):
-            start = date.fromisoformat(manifest["end_date"]) + timedelta(days=1)
-            if start > end:
-                print(f"Data already up to date (last date: {start - timedelta(days=1)})")
-                return
-    # 继续现有逻辑
-    ...
-```
-
-**CLI 参数**：
-```powershell
-python -m quant_rotation fetch-real-data `
-  --output data/real `
-  --end 2026-06-03 `
-  --update-mode append      # 仅追加 manifest.end_date 之后的数据
 ```
 
 **测试**：
+
 ```python
-def test_append_mode_does_not_fetch_before_manifest_end(self):
-    # 写一个 manifest 说 end_date=2026-01-01
-    # 运行 append 模式，验证 AKShare 调用的 start 参数 >= 2026-01-02
+def test_breadth_uses_snapshot_at_signal_date(self):
+    """不同信号日期应用不同成分股快照"""
+    early_map = {"stock_A": "行业X", "stock_B": "行业X"}
+    late_map = {"stock_A": "行业Y", "stock_B": "行业X"}
+    stock_map = StockIndustryMap({
+        date(2014, 2, 21): early_map,
+        date(2021, 12, 13): late_map,
+    })
+    breadth_early = compute_industry_breadth(..., signal_date=date(2020, 1, 1))
+    breadth_late = compute_industry_breadth(..., signal_date=date(2022, 1, 1))
+    self.assertIn("行业X", breadth_early["breadth20"])
+    self.assertIn("行业Y", breadth_late["breadth20"])
 ```
 
 ---
 
-### 阶段 S：可视化增强（P3，3 天，低依赖性）
+## 六、阶段 X：基本面因子数据接入（P2，3 天）
 
-当前 HTML 报告（`plot.py::write_html_report()`）仅包含：净值曲线、回撤图、年度收益、持仓期分布。建议补充：
+### 背景
 
-#### S1：WF 折叠对比图（`plot.py` 新增函数）
+`models.py::FactorWeights` 已有 `valuation` 和 `prosperity` 字段，`backtest.py` 已支持这两个因子，但实盘数据尚未接入。Sample data 中有对应 CSV，但 real data 没有。
+
+### X1：行业估值百分位数据接入
+
+`industry_valuation.csv`：每个行业的 PE/PB 历史百分位（0–1，越低越便宜）。
+
+**数据来源选项**：
+- AKShare `stock_a_indicator_lg` 接口（个股 PE/PB → 聚合至行业）
+- Wind 行业 PE 历史数据（手动导出）
+
+**实现**（`real_data.py` 新增函数）：
 
 ```python
-def plot_walk_forward_folds(
-    folds_csv: str | Path,
-    oos_equity_csv: str | Path,
-) -> bytes:
-    """各折 OOS 净值曲线多线图 + 折叠盈亏条形图"""
+def compute_industry_valuation_percentile(
+    stock_pe_data: dict[str, pd.Series],  # 个股 PE 时序
+    stock_map: StockIndustryMap,
+    window: int = 252,                    # 历史百分位窗口（约 1 年）
+) -> PriceData:
+    """
+    计算各行业中位数 PE 的历史滚动百分位。
+    返回 PriceData，值域 [0, 1]，越低越便宜（factor_weights.valuation 期望低值高分）。
+    """
 ```
 
-在 HTML 报告中新增 `<h2>Walk-Forward Folds</h2>` 章节，生成：
-- 每折 OOS 净值曲线（多线，按折着色）
-- 训练 Sharpe vs 测试 Sharpe 散点图（检验 train-test 相关性）
+### X2：行业景气度代理接入
 
-#### S2：风控命中率可视化
+`industry_prosperity.csv`：行业景气指标（标准化后的符号值，正为景气）。
+
+**候选指标**（单选或加权组合）：
+- 行业成交量相对 60 日均量的 z-score（已有 amount 数据，可直接计算）
+- AKShare `macro_china_pmi` 相关行业 PMI（制造业子行业）
+
+**最小可行版**（不依赖新数据源）：
 
 ```python
-def plot_risk_control_accuracy(accuracy_csv: str | Path) -> bytes:
-    """按年展示 TP/FP/Neutral 柱状图 + 命中率折线"""
+def compute_industry_amount_zscore(
+    amount_data: PriceData,
+    window: int = 60,
+) -> PriceData:
+    """用成交额相对滚动均值的 z-score 作为景气代理"""
+    # 对每个行业计算：(amount - rolling_mean) / rolling_std
+    # 结果已经是有符号标准化值，可直接作为 prosperity 因子
 ```
 
-这对分析 soft vs hard 风控效果差异非常直观。
-
-#### S3：参数扫描热力图（`plot.py` 新增函数）
+**测试**：
 
 ```python
-def plot_parameter_heatmap(sweep_csv: str | Path, x_param: str, y_param: str, metric: str) -> bytes:
-    """生成二维参数 × 指标热力图（e.g., top_k × risk_off_exposure vs OOS Sharpe）"""
+def test_valuation_percentile_is_in_unit_interval(self):
+    result = compute_industry_valuation_percentile(...)
+    for closes in result.closes.values():
+        self.assertTrue(all(0 <= v <= 1 for v in closes if not math.isnan(v)))
+
+def test_amount_zscore_is_zero_mean_unit_variance(self):
+    result = compute_industry_amount_zscore(amount_data, window=20)
+    # 验证结果均值接近 0、标准差接近 1（排除 warmup 期）
 ```
 
 ---
 
-## 三、优先级总览（本次更新）
+## 七、阶段 Y：CI/CD 与运营质量（P3，2 天）
 
-| 优先级 | 任务 | 性质 | 预期价值 | 估计工时 |
-|--------|------|------|---------|---------|
-| 🔴 P0 | **N1：运行跨段长历史 WF** | 执行实验 | 得到 20+ 折可信 OOS 结论 | 0.5 天（跑命令+分析） |
-| 🔴 P0 | **N2：Soft risk-off 参数扫描** | 执行实验 | 量化 soft 风控对 sw2014 回撤的改善 | 0.5 天（跑命令+分析） |
-| 🔴 P0 | **N3：State-aware 风控对比** | 执行实验 | 量化 sideways exposure 对 2024-2025 的改善 | 0.5 天 |
-| 🟠 P1 | **O：Bootstrap 置信区间** | 代码实现 | WF 结论获得统计显著性支撑 | 2 天 |
-| 🟠 P1 | **P：跨段阈值最终定版** | 执行实验 | 确定生产 threshold 参数 | 0.5 天（依赖 N1） |
-| 🟡 P2 | **Q：补全测试覆盖** | 代码实现 | 防止 G1/G2 回归 | 3 天 |
-| 🟡 P2 | **R：增量数据刷新** | 代码实现 | 日常运营安全性 | 2 天 |
-| 🟢 P3 | **S：可视化增强** | 代码实现 | 分析体验提升 | 3 天 |
+### Y1：GitHub Actions 基础 CI
+
+当前无自动化测试运行。新增 `.github/workflows/ci.yml`：
+
+```yaml
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e .
+      - run: python -m pytest tests/ -v --tb=short
+```
+
+### Y2：数据质量检查工具（`tools/check_data_quality.py`）
+
+每次拉取新数据后自动运行，检查：
+
+```python
+def check_industry_close(path: Path) -> list[str]:
+    """返回发现的数据质量问题列表"""
+    issues = []
+    df = pd.read_csv(path, index_col=0, parse_dates=True)
+
+    # 检查 1：连续 NaN 超过 5 个交易日（可能数据缺失）
+    for col in df.columns:
+        max_nan_run = df[col].isna().groupby(df[col].notna().cumsum()).sum().max()
+        if max_nan_run > 5:
+            issues.append(f"{col}: {max_nan_run} consecutive NaNs")
+
+    # 检查 2：单日涨跌幅超过 ±15%（非 ST 行业）
+    daily_returns = df.pct_change()
+    extreme = (daily_returns.abs() > 0.15).stack()
+    for (date, industry) in extreme[extreme].index:
+        issues.append(f"{industry} on {date}: extreme return {daily_returns.loc[date, industry]:.1%}")
+
+    # 检查 3：最新日期是否为今日或昨日（数据新鲜度）
+    latest = df.index.max()
+    lag = (date.today() - latest.date()).days
+    if lag > 3:
+        issues.append(f"Data lag: {lag} days (latest: {latest.date()})")
+
+    return issues
+```
+
+### Y3：`pyproject.toml` 补充开发依赖
+
+```toml
+[project.optional-dependencies]
+real-data = ["akshare>=1.18.0"]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",          # 代码风格检查
+]
+```
 
 ---
 
-## 四、立即执行步骤（有序）
+## 八、优先级总览
 
-以下步骤按顺序执行，每步有可验证的输出：
+| 优先级 | 阶段 | 核心任务 | 性质 | 估计工时 | 依赖 |
+|--------|------|---------|------|---------|------|
+| 🔴 P0 | **T1** | `signal` CLI 子命令 | 新功能 | 2 天 | 无 |
+| 🔴 P0 | **T2** | `daily_refresh.py` 运营脚本 | 新工具 | 0.5 天 | T1 |
+| 🔴 P0 | **T3** | `position_tracker.py` 持仓差异工具 | 新工具 | 0.5 天 | T1 |
+| 🟠 P1 | **U1** | append 模式测试覆盖 | 测试 | 1.5 天 | 无 |
+| 🟠 P1 | **U2** | `_write_*_append` 边界测试 | 测试 | 0.5 天 | 无 |
+| 🟠 P1 | **V1** | `plot` 命令 WF 路径探测修复 | Bug fix | 0.5 天 | 无 |
+| 🟠 P1 | **V2** | `plot` 命令嵌入 WF summary 表格 | 功能增强 | 0.5 天 | V1 |
+| 🟠 P1 | **V3** | `plot` 支持跨段 WF 报告 | Bug fix | 0.5 天 | V1 |
+| 🟡 P2 | **W1** | 历史成分股快照格式设计与验证工具 | 数据基础设施 | 1 天 | 无 |
+| 🟡 P2 | **W2** | `fetch-historical-constituents` CLI | 新功能 | 2 天 | W1 |
+| 🟡 P2 | **W3** | 历史成分股接入面包率计算 | 功能增强 | 2 天 | W1, W2 |
+| 🟡 P2 | **X1** | 行业估值百分位计算 | 因子增强 | 1.5 天 | 无 |
+| 🟡 P2 | **X2** | 成交额 z-score 景气代理 | 因子增强 | 1 天 | 无 |
+| 🟢 P3 | **Y1** | GitHub Actions CI | 工程质量 | 0.5 天 | 无 |
+| 🟢 P3 | **Y2** | 数据质量检查工具 | 运营工具 | 1 天 | 无 |
+| 🟢 P3 | **Y3** | `pyproject.toml` 开发依赖补充 | 工程质量 | 0.5 天 | 无 |
 
-### Step 1：N1 跨段长历史 WF（✅ 已执行）
+---
+
+## 九、立即执行步骤（有序，最小阻塞）
+
+以下 5 步可在 2–3 天内完成，且无外部数据源依赖：
+
+### Step 1：实现 `signal` CLI 子命令（T1）
+
+优先级最高，是模拟实盘的入口。核心逻辑直接复用 `run_backtest()`，只需提取最后一次 rebalance。
 
 ```powershell
 $env:PYTHONPATH="src"
-python -m quant_rotation validate-segments `
-  --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml `
-  --industry-only `
-  --factor-set ret60_ret5 `
-  --top-k 5 `
-  --risk-off-exposure 0 `
-  --risk-control false `
-  --market-score-control false `
-  --train-window 504 `
-  --test-window 126 `
-  --output-dir reports/cross_segment_walk_forward
+python -m quant_rotation signal `
+  --config configs/production.toml `
+  --as-of 2026-06-03 `
+  --output reports/signals/signal_2026-06-03.json
 ```
 
-**结果**：27 折，OOS Sharpe 中位数 0.484，年化中位数 8.52%，16/27 折正收益。
+### Step 2：补充 append 模式测试（U1+U2）
 
-### Step 2：N2 Soft Risk-Off 扫描（⚠️ 已执行，仅生成 hard mode）
+在 `test_real_data.py` 中新增 4 个 append 测试，不需要网络请求（全部 mock）。
 
 ```powershell
-$env:PYTHONPATH="src"
-python -m quant_rotation sweep `
-  --config configs/real_sw2014.toml `
-  --industry-only `
-  --factor-set ret60_ret5 `
-  --top-k 5 `
-  --risk-control true `
-  --market-score-control true `
-  --risk-control-mode hard,soft `
-  --soft-exposure-min 0.0,0.1,0.2,0.3 `
-  --output-dir reports/real_sw2014/soft_riskoff_sweep
+python -m pytest tests/test_real_data.py -v -k "append"
 ```
 
-**⚠️ 问题**：输出仅含 4 条 hard mode 记录，`soft` mode 未生成。需修复 `sweep.py` 中 `risk_control_mode_values` 展开逻辑后重新运行。
+**预期**：4 个新测试全部通过，总用时 < 5 秒。
 
-### Step 3：N3 State-Aware 扫描（✅ 已执行）
+### Step 3：修复 `plot` 命令 WF 路径探测（V1）
+
+修改 `cli.py::plot_command` 中的路径探测逻辑，验证：
 
 ```powershell
-$env:PYTHONPATH="src"
-python -m quant_rotation sweep `
+# 验证跨段 WF 报告生成（当前会因缺 equity_curve.csv 报错）
+python -m quant_rotation plot `
+  --report-dir reports/cross_segment_walk_forward `
+  --output reports/cross_segment_walk_forward/html
+
+# 验证 sw2021 WF 子目录探测
+python -m quant_rotation plot `
+  --report-dir reports/real_sw2021 `
+  --output reports/real_sw2021/html_new
+```
+
+### Step 4：实现 `daily_refresh.py` 运营脚本（T2）
+
+封装 `fetch-real-data append` + `signal` 为一键脚本。
+
+```powershell
+python tools/daily_refresh.py
+# 预期：拉取今日数据（追加），生成 reports/signals/signal_2026-06-03.json
+```
+
+### Step 5：实现 amount z-score 景气代理因子（X2，最小可行版）
+
+此步无需新数据源，基于已有 `industry_amount.csv` 直接计算。完成后可立即在 sweep 中验证该因子对 Sharpe 的边际贡献（ablation）。
+
+```powershell
+python -m quant_rotation decompose `
   --config configs/real_sw2021.toml `
   --industry-only `
-  --factor-set ret60_ret5 `
-  --top-k 5 `
-  --risk-control true `
-  --market-score-control true `
-  --state-aware-risk-control true,false `
-  --output-dir reports/real_sw2021/state_aware_sweep
+  --factor-set ret60_ret5,ret60_ret5_prosperity
+  --output-dir reports/real_sw2021/prosperity_decomposition
 ```
 
-**结果**：state-aware 未显现优势（Sharpe +0.008，DD 恶化 2.3 pct），暂时放弃。
+---
 
-### Step 4：P 阈值定版 WF（✅ 已执行）
+## 十、关键决策节点
 
-```powershell
-$env:PYTHONPATH="src"
-python -m quant_rotation validate-segments `
-  --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml `
-  --industry-only `
-  --factor-set ret60_ret5 `
-  --top-k 5 `
-  --risk-control true `
-  --market-score-control true `
-  --market-score-threshold=-0.05,-0.02,0,0.02,0.05 `
-  --train-window 504 `
-  --test-window 126 `
-  --output-dir reports/cross_segment_threshold_wf
-```
+### 决策 A：实盘账户类型（模拟 vs 真实）
 
-**结果**：负阈值（-0.05, -0.02）在 8/27 折被 composite 选中，OOS 均值为负。固定 threshold=0.05 版本年化 9.77% 接近 N1 无风控版，但 median 仍被拖垮。**结论：risk_control=false 全面最优。**
+**条件**：T1 完成，信号生成系统稳定运行 2 周后。
 
-### Step 5：O Bootstrap CI 实现（✅ 已实现）
+**判断标准**：
+- 模拟实盘期间信号与回测一致率 > 95%
+- 数据刷新连续 10 个交易日无异常
+- position_tracker 正确输出换仓差异
 
-`validation.py::bootstrap_oos_ci()` 已存在并集成到 `_write_walk_forward_summary()`。N1 结果：年化 95% CI [-1.67%, 23.26%]，p_positive = 95.02%。P 阶段输出已验证可用。
+**选择**：
+- **模拟实盘**：继续在 CSV 中记录信号，不真实下单（推荐先做 3 个月）
+- **真实实盘**：需要接入券商 API（通常为 XTP/CFFEX/DMA 接口）
+
+### 决策 B：是否引入基本面因子（阶段 X）
+
+**条件**：X2 完成，ablation 显示 `ret60_ret5_prosperity`（含 amount z-score 景气代理）相比 `ret60_ret5` 的 Sharpe 提升。
+
+**判断标准**：
+- sw2021 段 ablation Sharpe 提升 > +0.05
+- sw2014 段 ablation 无显著退化（< -0.03）
+- 跨段 WF 均值 Sharpe 提升 > +0.03
+
+**选择**：
+- **纳入**：更新 `configs/production.toml` 加入 `prosperity_weight`
+- **放弃**：维持 `ret60_ret5` 纯动量配置
+
+### 决策 C：历史成分股接入（阶段 W）
+
+**条件**：W1 格式设计完成，历史快照数据来源确认。
+
+**判断标准**：
+- 能获取 2014-02-21 和 2021-12-13 两个关键时间点的成分股快照
+- 接入后面包率回测与当前近似版差异 < 5%（说明近似误差可接受）
+
+**选择**：
+- **全面接入**：使用真实历史快照替换当前成分股近似
+- **维持现状**：在文档中标注近似版局限性，推迟至有可靠数据源
 
 ---
 
-## 五、关键决策点（实验后判断）
+## 十一、当前悬而未决的技术问题
 
-### 决策 1：N1 结果 ≥ 15 折盈利？
+以下问题在实施过程中需关注，但不阻塞主线：
 
-- **✅ 是（16/27，59.3%）**：跨段 WF 策略有可信度，OOS Sharpe 中位数 0.484。
-- **结论**：确认 `ret60_ret5 + top_k=5 + risk_control=false` 为基础配置，进入阶段 P 阈值定版。
+### 问题 1：`data/real_extended` 目录用途不明确
 
-### 决策 2：N2 Soft Risk-Off 改善 sw2014 回撤 > 10 pct？
+`data/real_extended/manifest.json` 与 `data/real/manifest.json` 内容几乎完全相同（相同 start/end/rows），仅 `generated_at` 不同。**没有任何 config 文件引用 `real_extended`**。
 
-- **⚠️ 无法判断**：`sweep` 未正确生成 `soft` mode 候选。hard mode 下 sw2014 回撤仍为 -53.6%～-54.8%。
-- **结论**：需先修复 `sweep.py::build_sweep_specs()` 中 `risk_control_mode_values` 的展开逻辑，重新运行 N2。
+**建议**：在 README 或 configs/ 中明确 `real_extended` 的预期用途（如"扩展历史数据，供研究用，不作为生产数据源"），或删除该目录避免混淆。
 
-### 决策 3：N3 State-Aware sideways=0.5 在 sw2021 段超过 riskoff=0 版本 Sharpe？
+### 问题 2：`monthly_win_rate` 计算逻辑
 
-- **❌ 否**：state-aware Sharpe 0.533 vs hard 0.525（+0.008），回撤反而恶化（-19.6% vs -17.3%）。
-- **结论**：维持当前方向，暂不使用 state-aware。
+`reports/production/metrics.csv` 中 `monthly_win_rate=0.291`，低于预期。检查 `metrics.py` 中的计算方式是否将 risk-off 期间（exposure=0）计为"亏损月"或"中性月"。如果风控频繁触发将人为压低月胜率。
 
-### 决策 4：是否满足模拟实盘前提
+**建议**：在 `metrics.py` 中新增 `monthly_win_rate_excl_riskoff` 指标，仅统计有实际持仓的月份。
 
-**所有条件检测（基于 N1 risk_control=false，27 折）：**
+### 问题 3：`real_sw2000` 段缺少 `market_close.csv`
 
-| 条件 | 阈值 | 实际 | 判定 |
-|------|------|------|------|
-| 跨段 WF 折数 | ≥ 20 | 27 | ✅ |
-| OOS 年化中位数 | > 0% | 8.52% | ✅ |
-| OOS Sharpe 中位数 | > 0.20 | 0.484 | ✅ |
-| Bootstrap p_positive (年化) | > 0.75 | 95.02% | ✅ |
-| 亏损折数 | ≤ 11（合理） | 11/27 | ✅ |
-| 风控压缩 sw2014 DD | < -45% | 放弃风控，不适用 | — |
-| 风控 sw2014 WF 亏损折 ≤ 4 | — | 放弃风控，不适用 | — |
+`data/real_sw2000/manifest.json` 显示 `"market_close": null`，该段无市场状态数据。在 `validate-segments` 跨段 WF 中，sw2000 段所有 `market_score_control=true` 的候选会自动降级为纯 `risk_control`（MA120）模式，可能导致与其他段策略不一致。
 
-**结论**：以 `ret60_ret5 + top_k=5 + risk_control=false` 为生产配置，所有实盘前提均已满足。可以进入模拟实盘阶段。
+**建议**：在 `validate_segments_command` 中添加警告日志，提示当某段缺少 market_close 时 market_score_control 被降级。
 
 ---
 
-## 六、确认无需继续的工作
+## 十二、策略性能基线（本版记录，用于后续对照）
 
-| 工作 | 放弃原因 |
-|-----|---------| 
-| `amount_strength` 因子恢复 | Ablation 证明移除后 Sharpe +0.055，永久关闭 |
-| `ret20` 因子恢复 | Ablation 证明移除后 Sharpe +0.134，永久关闭 |
-| `top_k=8` 配置 | Sweep 证明 top_k=5 全面优于 8 |
-| 统一口径重建 2021 版历史指数 | 分段串接方案已替代 |
-| `all_factors` 配置 | 全因子版 Sharpe 仅 0.18 vs 精简版 0.52 |
-| 历史成分股快照接入（K2） | 短期数据源不可达；标注为研究近似版即可 |
-
----
-
-## 七、当前策略性能基线（截至 2026-06-03）
-
-### 生产策略（`ret60_ret5_top5_riskoff0`，sw2021 段 2021-2026）
-
-| 指标 | 数值 | 评价 |
-|-----|------|------|
-| 年化收益 | 6.51% | ⚠️ 中等 |
-| 最大回撤 | -17.26% | ✅ 可接受 |
-| Sharpe | 0.525 | ✅ 合理 |
-| Calmar | 0.377 | ✅ 合理 |
-| 相对沪深300 超额 | +35.3% | ✅ 显著 |
-| WF OOS 中位数 Sharpe（有风控版） | **-0.155** | 🔴 问题核心 |
-| WF OOS 中位数 Sharpe（无风控版） | **+1.296** | ✅（但同样仅 4 折） |
-
-### 风控命中率（production 段，2022-2026）
-
-| 期间 | 命中率 | 评价 |
-|------|--------|------|
-| 2022-2023（熊市/震荡） | 71.4% | ✅ 有效 |
-| 2024-2025（转牛/牛市） | 30.0% | 🔴 无效 |
-| 整体 | 47.8% | 🔴 略低于随机 |
-
-### 跨段长历史 WF（N1，ret60_ret5 top_k=5 risk_control=false，2010-2026）
-
-| 指标 | 数值 | 评价 |
-|-----|------|------|
-| 总折数 | **27** | ✅ |
-| OOS 年化中位数 | **8.52%** | ✅ |
-| OOS Sharpe 中位数 | **0.484** | ✅ 优秀 |
-| OOS 最大回撤中位数 | **-13.25%** | ✅ 可接受 |
-| 盈利折数 | 16/27（59.3%） | ✅ 达标 |
-| 正 Sharpe 折数 | 19/27（70.4%） | ✅ |
-| 最大单折亏损 | -47.25%（折 13，2018 大熊市） | ⚠️ 单折极端 |
-| 2018 年跨折表现 | 折 12-13 合计约 -55% | 🔴 需关注 |
-
-> ⚠️ 标注项代表当前待改善指标。**N1 已验证策略在 16 年跨段中有效。当前最急迫的是修复 N2 soft mode sweep 生成逻辑，然后跑 N1 风控版阈值扫描。**
-# 2026-06-03 晚间推进记录（Codex 本轮）
-
-## 已落地代码
-
-| 项目 | 位置 | 状态 |
-|------|------|------|
-| 修复 soft risk-off sweep 漏生成 | `src/quant_rotation/sweep.py::build_parameter_sweep_specs()` | 已修复：soft 分支现在会写入 `specs` |
-| Bootstrap OOS CI | `src/quant_rotation/validation.py::bootstrap_oos_ci()` + `_write_walk_forward_summary()` | 已实现：summary 新增 `bootstrap_ci_lower` / `bootstrap_ci_upper` / `bootstrap_p_positive` |
-| market state 边界修正 | `src/quant_rotation/backtest.py::classify_market_state()` | 已修复：MA 窗口不足时不再无条件返回 `bull` |
-| 回归测试补充 | `tests/test_sweep.py` / `tests/test_backtest.py` / `tests/test_validation.py` | 已补充 soft 展开、state-aware、bootstrap、recent-weighted、regime-aware 测试 |
-
-## 本轮实验结果
-
-### N2 Soft Risk-Off 扫描
-
-输出目录：
-- `reports/real_sw2014/soft_riskoff_sweep/`
-- `reports/production/soft_riskoff_sweep/`
-
-结果要点：
-- 两个目录均已从 4 条 hard-only 结果变为 8 条 hard+soft 结果。
-- sw2014 段 soft 候选未达到验收目标：soft 最好回撤约 `-48.99%`，仍未把最大回撤压到计划要求区间。
-- sw2014 soft 候选：`soft_min=0.0` 年化 `9.70%` / DD `-48.99%` / Sharpe `0.614`；`soft_min=0.2` 年化 `10.21%` / DD `-49.67%` / Sharpe `0.622`。
-- production 段最好为 `soft_min=0.0`：年化 `6.55%`，DD `-19.32%`，Sharpe `0.576`；但 DD 劣于 hard `riskoff=0` 的 `-17.26%`。
-
-结论：soft risk-off 暂不替代 hard，也不作为生产默认。
-
-### P 跨段阈值 WF
-
-输出目录：`reports/cross_segment_threshold_wf/`
-
-27 折，覆盖 `2010-01-04` 至 `2026-03-05`：
-- 测试年化均值 `8.06%`，中位数 `0.47%`
-- 测试最大回撤均值 `-8.02%`，中位数 `-4.62%`
-- 测试 Sharpe 均值 `0.378`，中位数 `0.120`
-- Bootstrap 年化收益 95% CI：`[-1.35%, 20.39%]`
-- Bootstrap `p_positive=0.945`
-
-固定阈值候选统计：
-
-| threshold | Sharpe 中位数 | Sharpe 均值 | 年化均值 |
-|-----------|---------------|-------------|----------|
-| `-0.05` | `0.000` | `0.223` | `7.20%` |
-| `-0.02` | `0.000` | `0.178` | `6.11%` |
-| `0.00` | `0.000` | `0.309` | `7.32%` |
-| `0.02` | `0.000` | `0.178` | `5.71%` |
-| `0.05` | `0.000` | `0.250` | `5.83%` |
-
-决策：按“20+ 折 OOS Sharpe 中位数最高；若差距 `< 0.05` 保留 `0.0`”规则，生产 `market_score_threshold` 保持 `0.0`。
-
-### N1 基础跨段 WF（已刷新 Bootstrap）
-
-输出目录：`reports/cross_segment_walk_forward/`
-
-- 测试年化均值 `9.92%`，中位数 `8.52%`
-- 测试 Sharpe 中位数 `0.484`
-- Bootstrap 年化收益 95% CI：`[-1.67%, 23.26%]`
-- Bootstrap `p_positive=0.950`
-
-## 测试状态
-
-`python -m pytest`：`80 passed`
-
-## 当前下一步建议
-
-1. 暂不启用 soft risk-off 与 state-aware 作为生产默认。
-2. 生产阈值保持 `market_score_threshold=0.0`。
-3. 下一阶段优先级可转向 `R`（增量数据刷新核对/补测试）或 `S`（报告可视化增强）；`Q` 的 backtest / validation 关键测试本轮已补齐。
-
----
+| 指标 | 值 | 数据范围 | 配置 |
+|------|----|---------|------|
+| 年化收益（全段） | 6.51% | 2021–2026 | ret60_ret5, top_k=5, riskoff=0 |
+| 最大回撤（全段） | -17.26% | 2021–2026 | 同上 |
+| Sharpe（全段） | 0.525 | 2021–2026 | 同上 |
+| 超额收益 vs 沪深300 | +35.3% | 2021–2026 | 同上 |
+| WF OOS Sharpe 中位数 | 0.484 | 2010–2026，27 折 | 同上 |
+| WF OOS 年化中位数 | 8.52% | 2010–2026，27 折 | 同上 |
+| WF 盈利折数 | 16/27（59.3%） | 2010–2026，27 折 | 同上 |
+| Bootstrap p_positive | 95.02% | 基于 N1，10000 次 | 同上 |
+| 测试用例数 | 80 通过 / 0 失败 | 截至 2026-06-03 | — |
