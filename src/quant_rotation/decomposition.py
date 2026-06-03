@@ -22,6 +22,8 @@ FACTOR_FIELDS = (
     "amount_strength",
     "breadth20",
     "breadth60",
+    "valuation",
+    "prosperity",
     "vol20",
     "ret5",
 )
@@ -76,6 +78,8 @@ def _factor_available(
     field: str,
     amount_data: PriceData | None,
     breadth_data: BreadthData | None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
 ) -> bool:
     if field == "amount_strength":
         return amount_data is not None
@@ -83,6 +87,10 @@ def _factor_available(
         return breadth_data is not None and breadth_data.breadth20 is not None
     if field == "breadth60":
         return breadth_data is not None and breadth_data.breadth60 is not None
+    if field == "valuation":
+        return valuation_data is not None
+    if field == "prosperity":
+        return prosperity_data is not None
     return True
 
 
@@ -91,12 +99,20 @@ def _configured_fields(
     fields: tuple[str, ...],
     amount_data: PriceData | None,
     breadth_data: BreadthData | None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
 ) -> tuple[str, ...]:
     return tuple(
         field
         for field in fields
         if getattr(base_weights, field) != 0.0
-        and _factor_available(field, amount_data, breadth_data)
+        and _factor_available(
+            field,
+            amount_data,
+            breadth_data,
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
+        )
     )
 
 
@@ -104,6 +120,8 @@ def build_factor_decomposition_specs(
     base_weights: FactorWeights,
     amount_data: PriceData | None = None,
     breadth_data: BreadthData | None = None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
 ) -> list[FactorDecompositionSpec]:
     specs: list[FactorDecompositionSpec] = []
     all_active_fields = _configured_fields(
@@ -111,6 +129,8 @@ def build_factor_decomposition_specs(
         FACTOR_FIELDS,
         amount_data,
         breadth_data,
+        valuation_data=valuation_data,
+        prosperity_data=prosperity_data,
     )
 
     def add(
@@ -124,6 +144,8 @@ def build_factor_decomposition_specs(
             fields,
             amount_data,
             breadth_data,
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
         )
         if not active_fields:
             return
@@ -146,6 +168,9 @@ def build_factor_decomposition_specs(
     add("breadth", "industry breadth composite", ("breadth20", "breadth60"))
     add("breadth20", "industry MA20 breadth", ("breadth20",))
     add("breadth60", "industry MA60 breadth", ("breadth60",))
+    add("valuation", "industry valuation percentile, lower is cheaper", ("valuation",))
+    add("prosperity", "industry prosperity proxy", ("prosperity",))
+    add("fundamental", "valuation and prosperity composite", ("valuation", "prosperity"))
     add("risk_penalty", "volatility and short-term overheating penalties", ("vol20", "ret5"))
     add("vol20", "20-day volatility factor using configured sign", ("vol20",))
     add("ret5", "5-day return factor using configured sign", ("ret5",))
@@ -171,6 +196,8 @@ def run_factor_decomposition(
     config: StrategyConfig,
     amount_data: PriceData | None = None,
     breadth_data: BreadthData | None = None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
     market_data: PriceData | None = None,
     market_weights: dict[str, float] | None = None,
     stock_data: PriceData | None = None,
@@ -181,6 +208,8 @@ def run_factor_decomposition(
         config.factor_weights,
         amount_data=amount_data,
         breadth_data=breadth_data,
+        valuation_data=valuation_data,
+        prosperity_data=prosperity_data,
     )
     if not specs:
         raise ValueError("No configured and available factors to decompose")
@@ -194,6 +223,8 @@ def run_factor_decomposition(
             strategy,
             amount_data=amount_data,
             breadth_data=breadth_data,
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
             market_data=market_data,
             market_weights=market_weights,
             stock_data=stock_data,

@@ -1,0 +1,7 @@
+rank_by_train,name,segment,year,annual_return
+1,ret60_valuation_top5_riskoff0,train,2023,0.0818383943
+1,ret60_valuation_top5_riskoff0,train,2024,0.0764224763
+1,ret60_valuation_top5_riskoff0,test,2024,0.1037306958
+2,ret60_ret5_fundamental_top5_riskoff0,train,2023,0.0730532135
+2,ret60_ret5_fundamental_top5_riskoff0,train,2024,0.0441736160
+2,ret60_ret5_fundamental_top5_riskoff0,test,2024,0.1159112718

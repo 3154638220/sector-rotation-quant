@@ -28,6 +28,14 @@ from .real_data import (
 )
 from .reports import write_reports
 from .sample_data import generate_sample_data
+from .segments import (
+    SegmentParameterSweepRuns,
+    SegmentBacktestRun,
+    stitch_parameter_sweep_segments,
+    stitch_backtest_segments,
+    write_segmented_backtest_reports,
+    write_segmented_parameter_sweep_reports,
+)
 from .sweep import run_parameter_sweep, write_parameter_sweep_reports
 from .sweep import (
     DEFAULT_FACTOR_SET_NAMES,
@@ -209,6 +217,86 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="Run a backtest")
     run.add_argument("--config", default="configs/default.toml", help="TOML config path")
     run.add_argument("--output-dir", default=None, help="Override report output directory")
+
+    run_segments = subparsers.add_parser(
+        "run-segments",
+        help="Run multiple dated backtest segments and stitch their equity curves",
+    )
+    run_segments.add_argument(
+        "--configs",
+        nargs="+",
+        required=True,
+        help="Ordered segment config paths, e.g. configs/real_sw2000.toml configs/real_sw2014.toml",
+    )
+    run_segments.add_argument(
+        "--output-dir",
+        default="reports/segmented_history",
+        help="Output directory for stitched segment reports",
+    )
+
+    sweep_segments = subparsers.add_parser(
+        "sweep-segments",
+        help="Run parameter sweeps over dated segments and stitch matching candidates",
+    )
+    sweep_segments.add_argument(
+        "--configs",
+        nargs="+",
+        required=True,
+        help="Ordered segment config paths, e.g. configs/real_sw2000.toml configs/real_sw2014.toml",
+    )
+    sweep_segments.add_argument(
+        "--output-dir",
+        default="reports/segmented_parameter_sweep",
+        help="Output directory for stitched parameter sweep reports",
+    )
+    sweep_segments.add_argument(
+        "--industry-only",
+        action="store_true",
+        help="Disable configured stock selection for cleaner industry-factor attribution",
+    )
+    sweep_segments.add_argument(
+        "--top-k",
+        default=",".join(str(value) for value in DEFAULT_TOP_K_VALUES),
+        help="Comma-separated top_k values, e.g. 5",
+    )
+    sweep_segments.add_argument(
+        "--factor-set",
+        default=",".join(DEFAULT_FACTOR_SET_NAMES),
+        help="Comma-separated factor sets, e.g. ret60,ret60_ret5",
+    )
+    sweep_segments.add_argument(
+        "--risk-off-exposure",
+        default=",".join(str(value) for value in DEFAULT_RISK_OFF_EXPOSURES),
+        help="Comma-separated risk-off exposure values, e.g. 0,0.3,0.5",
+    )
+    sweep_segments.add_argument(
+        "--risk-control",
+        default=",".join("true" if value else "false" for value in DEFAULT_RISK_CONTROL_VALUES),
+        help="Comma-separated risk_control values, e.g. false,true",
+    )
+    sweep_segments.add_argument(
+        "--market-score-control",
+        default="auto",
+        help=(
+            "Comma-separated market_score_control values, e.g. false,true. "
+            "Use auto to include true only when market data or benchmark exists."
+        ),
+    )
+    sweep_segments.add_argument(
+        "--market-score-threshold",
+        default=",".join(str(value) for value in DEFAULT_MARKET_SCORE_THRESHOLDS),
+        help=(
+            "Comma-separated market score threshold values, e.g. "
+            "-0.05,-0.02,0,0.02,0.05. Values only expand candidates where "
+            "market_score_control is true."
+        ),
+    )
+    sweep_segments.add_argument(
+        "--top-n-equity",
+        type=int,
+        default=10,
+        help="Number of top-ranked stitched equity curves to write",
+    )
 
     decompose = subparsers.add_parser(
         "decompose",
@@ -445,6 +533,30 @@ def _load_inputs(config_path: str):
             value_name="breadth60",
         )
     breadth_data = BreadthData(breadth20=breadth20_data, breadth60=breadth60_data)
+    valuation_data = None
+    if app_config.industry_valuation_path:
+        raw_valuation_data = load_wide_asset_csv(
+            app_config.industry_valuation_path,
+            value_name="valuation",
+        )
+        valuation_data = align_asset_data(
+            industry_data.dates,
+            industry_data.assets,
+            raw_valuation_data,
+            value_name="valuation",
+        )
+    prosperity_data = None
+    if app_config.industry_prosperity_path:
+        raw_prosperity_data = load_wide_asset_csv(
+            app_config.industry_prosperity_path,
+            value_name="prosperity",
+        )
+        prosperity_data = align_asset_data(
+            industry_data.dates,
+            industry_data.assets,
+            raw_prosperity_data,
+            value_name="prosperity",
+        )
     market_data = None
     if app_config.market_close_path:
         raw_market_data = load_wide_close_csv(app_config.market_close_path)
@@ -489,6 +601,8 @@ def _load_inputs(config_path: str):
         industry_data,
         amount_data,
         breadth_data,
+        valuation_data,
+        prosperity_data,
         market_data,
         stock_data,
         stock_amount_data,
@@ -503,6 +617,8 @@ def run_command(args: argparse.Namespace) -> int:
         industry_data,
         amount_data,
         breadth_data,
+        valuation_data,
+        prosperity_data,
         market_data,
         stock_data,
         stock_amount_data,
@@ -515,6 +631,8 @@ def run_command(args: argparse.Namespace) -> int:
         app_config.strategy,
         amount_data=amount_data,
         breadth_data=breadth_data,
+        valuation_data=valuation_data,
+        prosperity_data=prosperity_data,
         market_data=market_data,
         market_weights=app_config.market_weights,
         stock_data=stock_data,
@@ -533,12 +651,172 @@ def run_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_segments_command(args: argparse.Namespace) -> int:
+    segments: list[SegmentBacktestRun] = []
+    for config_path in args.configs:
+        (
+            app_config,
+            industry_data,
+            amount_data,
+            breadth_data,
+            valuation_data,
+            prosperity_data,
+            market_data,
+            stock_data,
+            stock_amount_data,
+            stock_industry_map,
+            benchmark_closes,
+        ) = _load_inputs(config_path)
+        result = run_backtest(
+            industry_data,
+            benchmark_closes,
+            app_config.strategy,
+            amount_data=amount_data,
+            breadth_data=breadth_data,
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
+            market_data=market_data,
+            market_weights=app_config.market_weights,
+            stock_data=stock_data,
+            stock_amount_data=stock_amount_data,
+            stock_industry_map=stock_industry_map,
+        )
+        segments.append(
+            SegmentBacktestRun(
+                name=Path(config_path).stem,
+                result=result,
+                industries=len(industry_data.assets),
+            )
+        )
+
+    segmented_result = stitch_backtest_segments(segments)
+    write_segmented_backtest_reports(segmented_result, args.output_dir)
+
+    print(
+        "Segmented backtest complete. "
+        f"Reports written to: {Path(args.output_dir).resolve()}"
+    )
+    print(f"Segments: {len(segments)}")
+    print(
+        "Date range: "
+        f"{segmented_result.stitched.dates[0].isoformat()} to "
+        f"{segmented_result.stitched.dates[-1].isoformat()}"
+    )
+    print(f"Final equity: {segmented_result.stitched.metrics['final_equity']:.4f}")
+    print(
+        "Annualized return: "
+        f"{segmented_result.stitched.metrics['annualized_return']:.2%}"
+    )
+    print(f"Max drawdown: {segmented_result.stitched.metrics['max_drawdown']:.2%}")
+    print(f"Sharpe ratio: {segmented_result.stitched.metrics['sharpe_ratio']:.2f}")
+    return 0
+
+
+def sweep_segments_command(args: argparse.Namespace) -> int:
+    top_k_values = _parse_int_tuple(args.top_k, "--top-k")
+    factor_set_names = _parse_str_tuple(args.factor_set, "--factor-set")
+    risk_off_exposures = _parse_float_tuple(
+        args.risk_off_exposure,
+        "--risk-off-exposure",
+    )
+    risk_control_values = _parse_bool_tuple(args.risk_control, "--risk-control")
+    market_score_control_values = _parse_bool_tuple_or_auto(
+        args.market_score_control,
+        "--market-score-control",
+    )
+    market_score_threshold_values = _parse_float_tuple(
+        args.market_score_threshold,
+        "--market-score-threshold",
+    )
+
+    segments: list[SegmentParameterSweepRuns] = []
+    for config_path in args.configs:
+        (
+            app_config,
+            industry_data,
+            amount_data,
+            breadth_data,
+            valuation_data,
+            prosperity_data,
+            market_data,
+            stock_data,
+            stock_amount_data,
+            stock_industry_map,
+            benchmark_closes,
+        ) = _load_inputs(config_path)
+        strategy = app_config.strategy
+        if args.industry_only:
+            strategy = replace(
+                strategy,
+                stock_selection=replace(strategy.stock_selection, enabled=False),
+            )
+            stock_data = None
+            stock_amount_data = None
+            stock_industry_map = None
+
+        runs = run_parameter_sweep(
+            industry_data,
+            benchmark_closes,
+            strategy,
+            amount_data=amount_data,
+            breadth_data=breadth_data,
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
+            market_data=market_data,
+            market_weights=app_config.market_weights,
+            stock_data=stock_data,
+            stock_amount_data=stock_amount_data,
+            stock_industry_map=stock_industry_map,
+            factor_set_names=factor_set_names,
+            top_k_values=top_k_values,
+            risk_off_exposures=risk_off_exposures,
+            risk_control_values=risk_control_values,
+            market_score_control_values=market_score_control_values,
+            market_score_threshold_values=market_score_threshold_values,
+        )
+        segments.append(
+            SegmentParameterSweepRuns(
+                name=Path(config_path).stem,
+                industries=len(industry_data.assets),
+                runs=runs,
+            )
+        )
+
+    stitched_runs = stitch_parameter_sweep_segments(segments)
+    write_segmented_parameter_sweep_reports(
+        stitched_runs,
+        args.output_dir,
+        top_n_equity=args.top_n_equity,
+    )
+
+    best = max(
+        stitched_runs,
+        key=lambda run: run.run.result.metrics["annualized_return"],
+    )
+    print(
+        "Segmented parameter sweep complete. "
+        f"Reports written to: {Path(args.output_dir).resolve()}"
+    )
+    print(f"Segments: {len(segments)}")
+    print(f"Runs: {len(stitched_runs)}")
+    print(f"Best: {best.run.spec.name}")
+    print(
+        "Best annualized return: "
+        f"{best.run.result.metrics['annualized_return']:.2%}"
+    )
+    print(f"Best max drawdown: {best.run.result.metrics['max_drawdown']:.2%}")
+    print(f"Best Sharpe ratio: {best.run.result.metrics['sharpe_ratio']:.2f}")
+    return 0
+
+
 def decompose_command(args: argparse.Namespace) -> int:
     (
         app_config,
         industry_data,
         amount_data,
         breadth_data,
+        valuation_data,
+        prosperity_data,
         market_data,
         stock_data,
         stock_amount_data,
@@ -561,6 +839,8 @@ def decompose_command(args: argparse.Namespace) -> int:
         strategy,
         amount_data=amount_data,
         breadth_data=breadth_data,
+        valuation_data=valuation_data,
+        prosperity_data=prosperity_data,
         market_data=market_data,
         market_weights=app_config.market_weights,
         stock_data=stock_data,
@@ -674,6 +954,8 @@ def sweep_command(args: argparse.Namespace) -> int:
         industry_data,
         amount_data,
         breadth_data,
+        valuation_data,
+        prosperity_data,
         market_data,
         stock_data,
         stock_amount_data,
@@ -711,6 +993,8 @@ def sweep_command(args: argparse.Namespace) -> int:
         strategy,
         amount_data=amount_data,
         breadth_data=breadth_data,
+        valuation_data=valuation_data,
+        prosperity_data=prosperity_data,
         market_data=market_data,
         market_weights=app_config.market_weights,
         stock_data=stock_data,
@@ -746,6 +1030,8 @@ def validate_command(args: argparse.Namespace) -> int:
         industry_data,
         amount_data,
         breadth_data,
+        valuation_data,
+        prosperity_data,
         market_data,
         stock_data,
         stock_amount_data,
@@ -784,6 +1070,8 @@ def validate_command(args: argparse.Namespace) -> int:
             strategy,
             amount_data=amount_data,
             breadth_data=breadth_data,
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
             market_data=market_data,
             market_weights=app_config.market_weights,
             stock_data=stock_data,
@@ -857,6 +1145,8 @@ def validate_command(args: argparse.Namespace) -> int:
         strategy,
         amount_data=amount_data,
         breadth_data=breadth_data,
+        valuation_data=valuation_data,
+        prosperity_data=prosperity_data,
         market_data=market_data,
         market_weights=app_config.market_weights,
         stock_data=stock_data,
@@ -1025,6 +1315,10 @@ def main(argv: list[str] | None = None) -> int:
         return fetch_stock_data_command(args)
     if args.command == "run":
         return run_command(args)
+    if args.command == "run-segments":
+        return run_segments_command(args)
+    if args.command == "sweep-segments":
+        return sweep_segments_command(args)
     if args.command == "decompose":
         return decompose_command(args)
     if args.command == "sweep":

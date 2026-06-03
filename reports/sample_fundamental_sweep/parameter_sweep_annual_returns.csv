@@ -1,0 +1,9 @@
+rank,name,factor_set,year,annual_return
+1,ret60_prosperity_top5_riskoff0,ret60_prosperity,2023,0.0766213437
+1,ret60_prosperity_top5_riskoff0,ret60_prosperity,2024,0.2118203758
+2,ret60_valuation_top5_riskoff0,ret60_valuation,2023,0.0818383943
+2,ret60_valuation_top5_riskoff0,ret60_valuation,2024,0.1980911132
+3,ret60_ret5_fundamental_top5_riskoff0,ret60_ret5_fundamental,2023,0.0730532135
+3,ret60_ret5_fundamental_top5_riskoff0,ret60_ret5_fundamental,2024,0.1769592324
+4,ret60_ret5_valuation_top5_riskoff0,ret60_ret5_valuation,2023,0.0731199744
+4,ret60_ret5_valuation_top5_riskoff0,ret60_ret5_valuation,2024,0.1486522204

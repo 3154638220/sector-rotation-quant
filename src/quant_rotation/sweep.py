@@ -53,6 +53,8 @@ def _factor_available(
     field: str,
     amount_data: PriceData | None,
     breadth_data: BreadthData | None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
 ) -> bool:
     if field == "amount_strength":
         return amount_data is not None
@@ -60,6 +62,10 @@ def _factor_available(
         return breadth_data is not None and breadth_data.breadth20 is not None
     if field == "breadth60":
         return breadth_data is not None and breadth_data.breadth60 is not None
+    if field == "valuation":
+        return valuation_data is not None
+    if field == "prosperity":
+        return prosperity_data is not None
     return True
 
 
@@ -67,11 +73,19 @@ def _active_fields(
     fields: tuple[str, ...],
     amount_data: PriceData | None,
     breadth_data: BreadthData | None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
 ) -> tuple[str, ...]:
     return tuple(
         field
         for field in fields
-        if _factor_available(field, amount_data, breadth_data)
+        if _factor_available(
+            field,
+            amount_data,
+            breadth_data,
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
+        )
     )
 
 
@@ -89,12 +103,20 @@ def _configured_weights(
     base_weights: FactorWeights,
     amount_data: PriceData | None,
     breadth_data: BreadthData | None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
 ) -> tuple[tuple[str, ...], FactorWeights]:
     fields = tuple(
         field
         for field in FACTOR_FIELDS
         if getattr(base_weights, field) != 0.0
-        and _factor_available(field, amount_data, breadth_data)
+        and _factor_available(
+            field,
+            amount_data,
+            breadth_data,
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
+        )
     )
     values = {field: getattr(base_weights, field) for field in fields}
     return fields, _factor_weights(values)
@@ -117,12 +139,16 @@ def _candidate_factor_sets(
     base_weights: FactorWeights,
     amount_data: PriceData | None,
     breadth_data: BreadthData | None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
 ) -> list[tuple[str, str, tuple[str, ...], FactorWeights]]:
     candidates: list[tuple[str, str, tuple[str, ...], FactorWeights]] = []
     configured_fields, configured_weight_values = _configured_weights(
         base_weights,
         amount_data,
         breadth_data,
+        valuation_data=valuation_data,
+        prosperity_data=prosperity_data,
     )
     if configured_fields:
         candidates.append(
@@ -166,13 +192,39 @@ def _candidate_factor_sets(
             {"ret60": 1.0, "ret5": -0.5, "breadth20": 0.15},
         ),
         (
+            "ret60_valuation",
+            "60-day momentum with valuation percentile filter",
+            {"ret60": 1.0, "valuation": 0.20},
+        ),
+        (
+            "ret60_ret5_valuation",
+            "60-day momentum, 5-day overheating penalty, and valuation",
+            {"ret60": 1.0, "ret5": -0.5, "valuation": 0.20},
+        ),
+        (
+            "ret60_prosperity",
+            "60-day momentum with prosperity proxy",
+            {"ret60": 1.0, "prosperity": 0.20},
+        ),
+        (
+            "ret60_ret5_fundamental",
+            "60-day momentum, 5-day overheating penalty, valuation, and prosperity",
+            {"ret60": 1.0, "ret5": -0.5, "valuation": 0.15, "prosperity": 0.15},
+        ),
+        (
             "price_momentum",
             "20/60/120-day industry momentum",
             {"ret20": 1.0, "ret60": 1.0, "ret120": 0.5},
         ),
     ]
     for name, description, values in raw_candidates:
-        fields = _active_fields(tuple(values), amount_data, breadth_data)
+        fields = _active_fields(
+            tuple(values),
+            amount_data,
+            breadth_data,
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
+        )
         if len(fields) != len(values):
             continue
         available_values = {field: values[field] for field in fields}
@@ -193,6 +245,8 @@ def build_parameter_sweep_specs(
     config: StrategyConfig,
     amount_data: PriceData | None = None,
     breadth_data: BreadthData | None = None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
     factor_set_names: tuple[str, ...] = DEFAULT_FACTOR_SET_NAMES,
     top_k_values: tuple[int, ...] = DEFAULT_TOP_K_VALUES,
     risk_off_exposures: tuple[float, ...] = DEFAULT_RISK_OFF_EXPOSURES,
@@ -227,6 +281,8 @@ def build_parameter_sweep_specs(
         config.factor_weights,
         amount_data,
         breadth_data,
+        valuation_data=valuation_data,
+        prosperity_data=prosperity_data,
     )
     available_names = {factor_set for factor_set, *_ in candidate_sets}
     unknown_names = sorted(set(factor_set_names) - available_names)
@@ -295,6 +351,8 @@ def run_parameter_sweep(
     config: StrategyConfig,
     amount_data: PriceData | None = None,
     breadth_data: BreadthData | None = None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
     market_data: PriceData | None = None,
     market_weights: dict[str, float] | None = None,
     stock_data: PriceData | None = None,
@@ -327,6 +385,8 @@ def run_parameter_sweep(
         config,
         amount_data=amount_data,
         breadth_data=breadth_data,
+        valuation_data=valuation_data,
+        prosperity_data=prosperity_data,
         factor_set_names=factor_set_names,
         top_k_values=top_k_values,
         risk_off_exposures=risk_off_exposures,
@@ -351,6 +411,8 @@ def run_parameter_sweep(
             strategy,
             amount_data=amount_data,
             breadth_data=breadth_data,
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
             market_data=market_data,
             market_weights=market_weights,
             stock_data=stock_data,

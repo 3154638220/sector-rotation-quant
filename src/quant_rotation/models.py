@@ -32,6 +32,8 @@ class FactorWeights:
     amount_strength: float = 0.25
     breadth20: float = 0.12
     breadth60: float = 0.08
+    valuation: float = 0.00
+    prosperity: float = 0.00
     vol20: float = -0.30
     ret5: float = -0.20
 
@@ -130,6 +132,8 @@ class AppConfig:
     industry_amount_path: str | None
     industry_breadth20_path: str | None
     industry_breadth60_path: str | None
+    industry_valuation_path: str | None
+    industry_prosperity_path: str | None
     market_close_path: str | None
     stock_close_path: str | None
     stock_amount_path: str | None

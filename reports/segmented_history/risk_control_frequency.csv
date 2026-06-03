@@ -1,0 +1,13 @@
+metric,value
+total_rebalances,181
+risk_off_rebalances,104
+risk_off_rebalance_share,0.5745856354
+market_trend_failures,84
+market_trend_failure_share,0.4640883978
+market_score_failures,86
+market_score_failure_share,0.4751381215
+rebalance_months,172
+risk_off_months,99
+risk_off_month_share,0.5755813953
+average_risk_on_exposure,1.0000000000
+average_risk_off_exposure,0.0000000000

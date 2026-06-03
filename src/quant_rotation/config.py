@@ -36,6 +36,8 @@ def load_config(path: str | Path) -> AppConfig:
         amount_strength=float(factors.get("amount_strength_weight", 0.25)),
         breadth20=float(factors.get("breadth20_weight", 0.12)),
         breadth60=float(factors.get("breadth60_weight", 0.08)),
+        valuation=float(factors.get("valuation_weight", 0.00)),
+        prosperity=float(factors.get("prosperity_weight", 0.00)),
         vol20=float(factors.get("vol20_weight", -0.30)),
         ret5=float(factors.get("ret5_weight", -0.20)),
     )
@@ -69,6 +71,8 @@ def load_config(path: str | Path) -> AppConfig:
         industry_amount_path=_resolve_path(base_dir, data.get("industry_amount")),
         industry_breadth20_path=_resolve_path(base_dir, data.get("industry_breadth20")),
         industry_breadth60_path=_resolve_path(base_dir, data.get("industry_breadth60")),
+        industry_valuation_path=_resolve_path(base_dir, data.get("industry_valuation")),
+        industry_prosperity_path=_resolve_path(base_dir, data.get("industry_prosperity")),
         market_close_path=_resolve_path(base_dir, data.get("market_close")),
         stock_close_path=_resolve_path(base_dir, data.get("stock_close")),
         stock_amount_path=_resolve_path(base_dir, data.get("stock_amount")),

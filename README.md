@@ -10,6 +10,7 @@ industry close prices plus a benchmark close series:
 - 20/60/120 day momentum
 - optional 20-day versus 120-day industry amount strength
 - optional industry breadth from constituents above MA20/MA60
+- optional industry valuation percentile and prosperity proxy factors
 - optional market/style momentum score for risk-on/risk-off filtering
 - 20 day volatility penalty
 - 5 day overheating penalty
@@ -68,6 +69,10 @@ python -m quant_rotation sample-data --output data/sample --days 520
 python -m quant_rotation run --config configs/default.toml
 ```
 
+Sample data includes `industry_valuation.csv` and `industry_prosperity.csv` so
+the optional fundamental-factor plumbing can be smoke-tested without external
+data.
+
 Run factor decomposition backtests:
 
 ```powershell
@@ -80,6 +85,21 @@ Run a parameter sweep around candidate factor models:
 ```powershell
 $env:PYTHONPATH="src"
 python -m quant_rotation sweep --config configs/production.toml --industry-only
+```
+
+Run a sample-data fundamental-factor sweep:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m quant_rotation sweep `
+  --config configs/default.toml `
+  --industry-only `
+  --factor-set ret60_valuation,ret60_ret5_valuation,ret60_prosperity,ret60_ret5_fundamental `
+  --top-k 5 `
+  --risk-off-exposure 0 `
+  --risk-control false `
+  --market-score-control false `
+  --output-dir reports/sample_fundamental_sweep
 ```
 
 Run a focused market score threshold calibration:
@@ -96,6 +116,23 @@ python -m quant_rotation sweep `
   --market-score-control true `
   --market-score-threshold=-0.05,-0.02,0,0.02,0.05 `
   --output-dir reports/production/market_threshold_sweep
+```
+
+Run the same threshold calibration across dated SW industry universes and stitch
+matching candidates into one long-history ranking:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m quant_rotation sweep-segments `
+  --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml `
+  --industry-only `
+  --factor-set ret60_ret5 `
+  --top-k 5 `
+  --risk-off-exposure 0 `
+  --risk-control true `
+  --market-score-control true `
+  --market-score-threshold=-0.05,-0.02,0,0.02,0.05 `
+  --output-dir reports/segmented_threshold_sweep
 ```
 
 Run train/test validation:
@@ -139,12 +176,19 @@ The sweep command defaults to the current candidate set:
 benchmark or market data is available. Use `--factor-set`, `--top-k`,
 `--risk-control`, `--market-score-control`, and `--market-score-threshold` to
 widen or narrow that space. Threshold values only expand candidates where
-`market_score_control=true`.
+`market_score_control=true`. When `industry_valuation.csv` or
+`industry_prosperity.csv` is configured, additional factor sets are available:
+`ret60_valuation`, `ret60_ret5_valuation`, `ret60_prosperity`, and
+`ret60_ret5_fundamental`.
 It writes:
 
 - `parameter_sweep.csv`
 - `parameter_sweep_equity_top.csv`
 - `parameter_sweep_annual_returns.csv`
+
+The `sweep-segments` command runs the same candidate grid for each ordered
+segment config, stitches candidates with matching names, and writes the same
+sweep files plus `parameter_sweep_segments.csv` for per-segment attribution.
 
 The validation command runs the same candidate set, ranks candidates on the
 train segment, and reports the selected candidate's test-segment performance.
@@ -342,6 +386,23 @@ python -m quant_rotation fetch-breadth-data `
 This writes `industry_breadth20.csv`, `industry_breadth60.csv`, and
 `breadth_manifest.json`.
 
+Fundamental factor files are plain wide CSVs aligned to `industry_close.csv`.
+`industry_valuation.csv` should contain 0-1 historical valuation percentiles,
+where lower values are cheaper and therefore score higher. `industry_prosperity.csv`
+contains a signed or standardized prosperity proxy where higher values score
+higher. These files can be precomputed from PE/PB histories, earnings revisions,
+PMI-style data, or other external sources:
+
+```toml
+[data]
+industry_valuation = "../data/real/industry_valuation.csv"
+industry_prosperity = "../data/real/industry_prosperity.csv"
+
+[factors]
+valuation_weight = 0.15
+prosperity_weight = 0.15
+```
+
 The `fetch-stock-data` command prepares phase-5 stock-selection inputs from
 current SW constituents. Use `--max-stocks-per-industry` for a small smoke test
 before fetching the full constituent universe:
@@ -385,6 +446,8 @@ available. For the phase-3 breadth model, also add the breadth files:
 industry_amount = "../data/real/industry_amount.csv"
 industry_breadth20 = "../data/real/industry_breadth20.csv"
 industry_breadth60 = "../data/real/industry_breadth60.csv"
+industry_valuation = "../data/real/industry_valuation.csv"
+industry_prosperity = "../data/real/industry_prosperity.csv"
 market_close = "../data/real/market_close.csv"
 stock_close = "../data/real/stock_close.csv"
 stock_amount = "../data/real/stock_amount.csv"
@@ -394,6 +457,8 @@ stock_industry_map = "../data/real/stock_industry_map.csv"
 amount_strength_weight = 0.25
 breadth20_weight = 0.12
 breadth60_weight = 0.08
+valuation_weight = 0.15
+prosperity_weight = 0.15
 stock_ret20_weight = 0.45
 stock_ret60_weight = 0.25
 stock_amount_strength_weight = 0.10

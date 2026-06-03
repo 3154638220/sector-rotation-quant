@@ -68,6 +68,8 @@ def compute_factor_snapshot(
     weights: FactorWeights,
     amount_data: PriceData | None = None,
     breadth_data: BreadthData | None = None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
 ) -> FactorSnapshot:
     if index < 120:
         raise ValueError("At least 120 observations are required for scoring")
@@ -78,6 +80,10 @@ def compute_factor_snapshot(
             _validate_aligned_factor_data("breadth20 data", breadth_data.breadth20, data)
         if breadth_data.breadth60 is not None:
             _validate_aligned_factor_data("breadth60 data", breadth_data.breadth60, data)
+    if valuation_data is not None:
+        _validate_aligned_factor_data("valuation data", valuation_data, data)
+    if prosperity_data is not None:
+        _validate_aligned_factor_data("prosperity data", prosperity_data, data)
 
     ret20: dict[str, float] = {}
     ret60: dict[str, float] = {}
@@ -85,6 +91,9 @@ def compute_factor_snapshot(
     amount_strength: dict[str, float] = {}
     breadth20: dict[str, float] = {}
     breadth60: dict[str, float] = {}
+    valuation: dict[str, float] = {}
+    valuation_score_input: dict[str, float] = {}
+    prosperity: dict[str, float] = {}
     vol20: dict[str, float] = {}
     ret5: dict[str, float] = {}
 
@@ -112,6 +121,14 @@ def compute_factor_snapshot(
                 index,
                 "breadth60",
             )
+        if valuation_data is not None:
+            value = valuation_data.closes[asset][index]
+            if not 0.0 <= value <= 1.0:
+                raise ValueError("valuation values must be between 0 and 1")
+            valuation[asset] = value
+            valuation_score_input[asset] = -value
+        if prosperity_data is not None:
+            prosperity[asset] = prosperity_data.closes[asset][index]
 
     z_ret20 = zscore(ret20)
     z_ret60 = zscore(ret60)
@@ -119,6 +136,8 @@ def compute_factor_snapshot(
     z_amount_strength = zscore(amount_strength)
     z_breadth20 = zscore(breadth20)
     z_breadth60 = zscore(breadth60)
+    z_valuation = zscore(valuation_score_input)
+    z_prosperity = zscore(prosperity)
     z_vol20 = zscore(vol20)
     z_ret5 = zscore(ret5)
 
@@ -130,6 +149,8 @@ def compute_factor_snapshot(
             + weights.amount_strength * z_amount_strength.get(asset, 0.0)
             + weights.breadth20 * z_breadth20.get(asset, 0.0)
             + weights.breadth60 * z_breadth60.get(asset, 0.0)
+            + weights.valuation * z_valuation.get(asset, 0.0)
+            + weights.prosperity * z_prosperity.get(asset, 0.0)
             + weights.vol20 * z_vol20[asset]
             + weights.ret5 * z_ret5[asset]
         )
@@ -150,4 +171,8 @@ def compute_factor_snapshot(
         fields["breadth20"] = breadth20
     if breadth60:
         fields["breadth60"] = breadth60
+    if valuation:
+        fields["valuation"] = valuation
+    if prosperity:
+        fields["prosperity"] = prosperity
     return FactorSnapshot(data.dates[index], scores, fields)

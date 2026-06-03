@@ -112,6 +112,8 @@ def run_backtest(
     config: StrategyConfig,
     amount_data: PriceData | None = None,
     breadth_data: BreadthData | None = None,
+    valuation_data: PriceData | None = None,
+    prosperity_data: PriceData | None = None,
     market_data: PriceData | None = None,
     market_weights: dict[str, float] | None = None,
     stock_data: PriceData | None = None,
@@ -162,6 +164,16 @@ def run_backtest(
                 raise ValueError(f"{name} dates must match price data dates")
             if value.assets != data.assets:
                 raise ValueError(f"{name} assets must match price data assets")
+    for name, value in (
+        ("valuation_data", valuation_data),
+        ("prosperity_data", prosperity_data),
+    ):
+        if value is None:
+            continue
+        if value.dates != data.dates:
+            raise ValueError(f"{name} dates must match price data dates")
+        if value.assets != data.assets:
+            raise ValueError(f"{name} assets must match price data assets")
     if config.rebalance_every <= 0:
         raise ValueError("rebalance_every must be positive")
     if config.market_score_window <= 0:
@@ -199,6 +211,8 @@ def run_backtest(
                 config.factor_weights,
                 amount_data=amount_data,
                 breadth_data=breadth_data,
+                valuation_data=valuation_data,
+                prosperity_data=prosperity_data,
             )
             trend_ok = (
                 _market_trend(benchmark_closes, signal_index, config.market_ma_window)

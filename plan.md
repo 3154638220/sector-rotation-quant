@@ -16,14 +16,17 @@
 | A3 | 在 `configs/real.toml` 中关闭拖累因子 | ✅ 已完成。`ret20 / ret120 / amount_strength / breadth / vol20` 均显式置零，保留 `ret60_weight = 1.00` 与 `ret5_weight = -0.50` |
 | B1 | 扩充历史数据至 2010 年 | ✅ 分段行业宇宙方案已落地。`fetch-real-data` 新增 `--industry-universe current/sw2021/sw2014/sw2000` 与 `--industry-indexes`；已生成 `data/real_sw2000`、`data/real_sw2014`、`data/real_sw2021` 三段官方指数宽表，覆盖 `2010-01-04` 至 `2026-06-02` |
 | B2 | 增加多指数 `market_close.csv` | ✅ 已完成。`fetch-real-data` 默认写入 `CSI300`、`CSIAll`、`ChiNext` 三列宽表；`production.toml` / `real.toml` 已启用 0.5/0.3/0.2 市场权重 |
-| B3 | 重校 `market_score_threshold` | ⚠️ 阶段性完成。新增 sweep/validate 阈值网格参数；当前 2021-2026 全样本中 `0.02` 年化 **8.48%**、最大回撤 **-17.26%**、Sharpe **0.68**，但月胜率仍 **29.1%**，需长历史复核后再改生产阈值 |
+| B3 | 重校 `market_score_threshold` | ⚠️ 长历史复核已推进。新增 `sweep-segments` 分段参数扫描串接；2010-2026 分段串接网格中 `0.05` 年化 **5.92%**、最大回撤 **-47.08%**、Sharpe **0.46** 最优，但月胜率仅 **20.7%**，生产阈值暂不改 |
 | B4 | 改进 walk-forward 候选选择指标 | ✅ 已完成。新增 `sharpe_plus_calmar` 选择指标，并降低 composite 中换手率惩罚 |
+| B5 | 分段历史净值串接报告 | ✅ 已完成。新增 `run-segments` 子命令与 `segments.py`，可把 `sw2000/sw2014/sw2021` 三段回测串接为 2010 至今统一净值；已输出 `reports/segmented_history` |
+| B6 | 分段参数扫描串接报告 | ✅ 已完成。新增 `sweep-segments` 子命令，可对三段行业宇宙分别跑同一候选网格并按候选名串接净值；已输出 `reports/segmented_threshold_sweep` |
 | C1 | 新增 `fetch-breadth-data` 子命令 | ✅ 阶段性完成。已实现当前申万成分股近似版宽度管道，输出 `industry_breadth20.csv` / `industry_breadth60.csv` 与 `breadth_manifest.json`；manifest 明确标注当前成分股幸存者偏差风险，等待历史成分快照接入后再进入生产 |
 | D1 | 扩大参数扫描候选集 | ✅ 已完成。默认覆盖 `ret60`、`ret60_ret5`、`ret60_ret120`、`ret60_ret120_ret5`，`top_k=(3,5,8)`，`risk_off=(0.0,0.2,0.3,0.5)` |
 | D2 | 增加基于持有期的性能分析 | ✅ 已完成。`write_reports` 现在输出 `holding_period_returns.csv`、`holding_period_return_distribution.csv`、`industry_selection_frequency.csv`、`risk_control_frequency.csv`，可直接诊断调仓周期收益、行业选择集中度与风控触发频率 |
 | D3 | 添加分年度超额报告 | ✅ 已完成。`annual_returns.csv` 已包含 `benchmark_return`、`industry_equal_weight_return`、`excess_vs_benchmark`、`excess_vs_equal_weight` |
 | E1/E3 | Phase 5 动态行业归属基础设施 | ✅ 阶段性完成。新增 `StockIndustryMap` 快照模型，`stock_industry_map.csv` 支持 `date` / `snapshot_date` / `as_of` 列；回测选股会按调仓信号日使用最近历史快照，静态 map 仍兼容 |
 | E2 | Phase 5 股票数据管道 | ✅ 阶段性完成。新增 `fetch-stock-data` 子命令，基于当前申万成分股生成 `stock_close.csv`、可选 `stock_amount.csv`、`stock_industry_map.csv` 与 `stock_manifest.json`；manifest 标注当前成分股幸存者偏差，正式生产仍需历史快照 |
+| F1/F2 | 估值 / 景气度因子框架 | ✅ 工程闭环已完成。新增 `industry_valuation.csv` / `industry_prosperity.csv` 可选宽表、`valuation_weight` / `prosperity_weight`、因子计算、decompose/sweep/validate 接入与 sample smoke test；真实生产仍需外部行业估值/景气数据 |
 
 ### 0.2 验证结果
 
@@ -37,18 +40,23 @@
 | 多指数数据管道 | `python -m quant_rotation fetch-real-data --output data/real --start 2021-12-13 --end 2026-06-02 --benchmark sh000300` | ✅ 写入 `data/real/market_close.csv`，共同日期 1074 行；列为 `CSI300`、`CSIAll`、`ChiNext` |
 | 分段历史数据管道 | `fetch-real-data --industry-universe sw2000/sw2014/sw2021` | ✅ `sw2000`: 2010-01-04 至 2014-02-20，998 行、23 行业；`sw2014`: 2014-02-21 至 2021-12-10，1893 行、28 行业；`sw2021`: 2021-12-13 至 2026-06-02，1074 行、31 行业 |
 | 分段固定候选 walk-forward | `validate --walk-forward --factor-set ret60_ret5 --top-k 5 --risk-off-exposure 0 --market-score-threshold 0` | ✅ `sw2000`: 3 折，测试年化均值 **4.17%**、平均回撤 **-7.73%**；`sw2014`: 11 折，测试年化均值 **4.73%**、平均回撤 **-8.98%**；`sw2021`: 4 折，测试年化均值 **21.91%**、平均回撤 **-8.01%** |
+| 分段历史净值串接 | `python -m quant_rotation run-segments --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml --output-dir reports/segmented_history` | ✅ 2010-01-04 至 2026-06-02 串接完成；最终净值 **2.2065**、年化 **5.16%**、最大回撤 **-54.83%**、Sharpe **0.39**、相对沪深300累计超额 **58.0%** |
 | 阈值扫描 | `python -m quant_rotation sweep --config configs/production.toml --industry-only --factor-set ret60_ret5 --top-k 5 --risk-off-exposure 0 --risk-control true --market-score-control true --market-score-threshold=-0.05,-0.02,0,0.02,0.05` | ⚠️ 全样本最佳 `threshold=0.02`，报告输出到 `reports/production/market_threshold_sweep`；walk-forward 固定候选中 `0.00` 与 `0.02` OOS 净值相同 |
+| 分段长历史阈值扫描 | `python -m quant_rotation sweep-segments --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml --industry-only --factor-set ret60_ret5 --top-k 5 --risk-off-exposure 0 --risk-control true --market-score-control true --market-score-threshold=-0.05,-0.02,0,0.02,0.05 --output-dir reports/segmented_threshold_sweep` | ⚠️ 2010-2026 串接最佳为 `threshold=0.05`：最终净值 **2.4719**、年化 **5.92%**、最大回撤 **-47.08%**、Sharpe **0.46**；相比 `0.00` 回撤改善但月胜率降至 **20.7%**，仍不宜直接改生产阈值 |
 | 报告增强 | `python -m unittest discover -s tests` + `python -m quant_rotation run --config configs/production.toml` | ✅ 24 个测试全部通过；生产报告新增 4 个 D2 诊断 CSV。当前生产策略 48 次调仓中 29 次空仓，`risk_off_rebalance_share = 60.4%` |
 | 广度数据管道 | `python -m quant_rotation fetch-breadth-data --help` + `python -m unittest tests.test_real_data` | ✅ CLI 子命令可用；新增宽度计算、当前成分股抓取、CSV/manifest 落盘测试 |
 | 动态行业归属 | `python -m unittest tests.test_stock_selection` + `python -m unittest discover -s tests` | ✅ 静态 map、带日期快照 map、按信号日切换股票行业归属均已覆盖；全量 33 个测试通过 |
 | 股票数据管道 | `python -m quant_rotation fetch-stock-data --help` + `python -m unittest tests.test_real_data` | ✅ CLI 子命令可用；新增当前成分股股票 close/amount 抓取、`stock_industry_map.csv`、`stock_manifest.json` 落盘测试 |
+| 估值/景气因子 smoke test | `python -m quant_rotation sample-data --output data/sample --days 520` + `python -m quant_rotation run --config configs/default.toml` + `python -m quant_rotation sweep --config configs/default.toml --industry-only --factor-set ret60_valuation,ret60_ret5_valuation,ret60_prosperity,ret60_ret5_fundamental --top-k 5 --risk-off-exposure 0 --risk-control false --market-score-control false --output-dir reports/sample_fundamental_sweep` | ✅ sample 生成 `industry_valuation.csv` / `industry_prosperity.csv`；默认回测最终净值 **1.4023**、年化 **17.84%**、最大回撤 **-3.23%**、Sharpe **3.35**；fundamental sweep 4 个候选跑通，最佳 `ret60_prosperity_top5_riskoff0` |
+| 估值/景气拆解与验证 | `python -m quant_rotation decompose --config configs/default.toml --industry-only --output-dir reports/sample_fundamental_decomposition` + `python -m quant_rotation validate --config configs/default.toml --industry-only --factor-set ret60_valuation,ret60_ret5_fundamental --top-k 5 --risk-off-exposure 0 --risk-control false --market-score-control false --train-end 2024-06-30 --test-start 2024-07-01 --output-dir reports/sample_fundamental_validation` | ✅ decompose 25 个组合跑通；train/test 选中 `ret60_valuation_top5_riskoff0`，测试年化 **21.26%**、最大回撤 **-3.24%**、Sharpe **3.51** |
 
 ### 0.3 当前阻塞与下一步
 
-- **历史数据扩展的第一阶段已完成**：分段行业宇宙数据已经覆盖 2010 至今。下一步不是继续抓同一份 31 行业共同交集，而是做分段参数扫描、OOS 串接净值，以及必要时重建统一 2021 口径历史指数。
-- **`market_score_threshold` 已完成阶段性扫描，但不宜仓促定版**：多指数加权市场分数下，全样本 `0.02` 优于 `0.0`，但 walk-forward 中两者 OOS 净值相同，且月胜率目标尚未达到。生产阈值暂保留 `0.0`，等待更长历史复核。
+- **历史数据扩展的第一阶段已完成，分段净值串接也已落地**：分段行业宇宙数据已经覆盖 2010 至今，`run-segments` 已能输出 2010-2026 统一净值与分段指标摘要。下一步不是继续抓同一份 31 行业共同交集，而是基于串接结果复核 2014 段极端回撤、重校风控阈值，并在必要时重建统一 2021 口径历史指数。
+- **`market_score_threshold` 已完成短样本与分段长历史扫描，但不宜仓促定版**：2021-2026 全样本 `0.02` 优于 `0.0`，2010-2026 分段串接中 `0.05` 的年化、回撤、Sharpe 更好；但 `0.05` 月胜率仅 **20.7%**，且优势主要来自降低 2014 段极端回撤。生产阈值暂保留 `0.0`，下一步应做分段 walk-forward 或按市场阶段复核。
 - **Phase 3 广度数据已有管道但仍未进入生产**：`fetch-breadth-data` 已能基于当前申万成分股生成宽度 CSV；`production.toml` 中 breadth 权重仍保持 `0.00`，等待历史成分快照或无偏数据源接入后再增量验证。
 - **Phase 5 已具备当前成分股股票数据管道但仍非无偏生产数据**：`fetch-stock-data` 已能生成 `stock_close.csv` / `stock_amount.csv` / `stock_industry_map.csv`，回测端也支持按信号日读取历史行业归属快照；下一步需要把当前成分股近似版升级为历史成分快照版。
+- **Phase F 估值/景气因子工程已完成但缺真实生产数据**：回测、decompose、sweep、validate 均已支持可选估值/景气宽表；`configs/production.toml` 中相关权重保持 `0.00`，等待行业 PE/PB 分位数或景气代理数据接入后再验证。
 
 ---
 
@@ -61,8 +69,8 @@
 | 阶段 1 | 价格动量（ret20 / ret60 / ret120） | ✅ 完整实现 |
 | 阶段 2 | 成交额强度（amount_strength） | ✅ 代码完整，但**因子表现为负** |
 | 阶段 3 | 行业内部广度（breadth20 / breadth60） | ⚠️ 数据管道阶段性完成，仍缺历史成分快照复核 |
-| 阶段 4 | 市场环境过滤（MA120 + market_score） | ⚠️ 已实现，但 market_close 仅有基准单指数 |
-| 阶段 5 | 行业内部选股 | ⚠️ 代码完整，实盘股票数据**缺失** |
+| 阶段 4 | 市场环境过滤（MA120 + market_score） | ✅ 已实现。`market_close.csv` 已支持多指数加权，阈值仍需研究定版 |
+| 阶段 5 | 行业内部选股 | ⚠️ 代码与当前成分股数据管道完整，正式生产仍缺历史成分快照 |
 
 ### 1.2 当前最优候选策略
 
@@ -115,7 +123,7 @@
 
 ### 问题 4：Phase 3/4/5 缺乏真实数据支撑
 
-- 行业内部广度数据（breadth20/60）需要成分股收盘价逐日计算，`data/real/` 目录下不存在
+- 行业内部广度数据（breadth20/60）已有当前成分股近似版管道，但正式生产仍需要历史成分快照消除幸存者偏差
 - 多指数市场环境（沪深300 + 中证全指 + 创业板）已有 `market_close.csv`，但阈值仍未校准
 - 股票选股需要全 A 股历史收盘价和行业归属图，量级大、难度高
 
@@ -211,6 +219,8 @@ python -m quant_rotation fetch-real-data \
 2. 已输出 `data/real_sw2000`、`data/real_sw2014`、`data/real_sw2021` 三套宽表和 manifest；manifest 会记录 `industry_universe` 与行业代码映射。
 3. 已新增 `configs/real_sw2000.toml`、`configs/real_sw2014.toml`、`configs/real_sw2021.toml`，可直接运行三段回测。
 4. 已完成固定生产候选 `ret60_ret5_top5_riskoff0` 的分段 walk-forward 验证。
+5. 已新增 `run-segments` 子命令，支持按配置顺序运行多段回测并串接净值，输出 `segment_summary.csv`、`segmented_equity_curve.csv` 与标准报告。
+6. 已新增 `sweep-segments` 子命令，支持按配置顺序运行多段参数扫描，并按候选名串接净值，输出 `parameter_sweep.csv`、`parameter_sweep_equity_top.csv`、`parameter_sweep_annual_returns.csv` 与 `parameter_sweep_segments.csv`。
 
 已执行命令：
 
@@ -245,6 +255,7 @@ python -m quant_rotation fetch-real-data `
 | `sw2000` | `2010-01-04` 至 `2014-02-20` | 23 | **-5.22%** | **-27.09%** | **4.17%** |
 | `sw2014` | `2014-02-21` 至 `2021-12-10` | 28 | **10.28%** | **-54.83%** | **4.73%** |
 | `sw2021` | `2021-12-13` 至 `2026-06-02` | 31 | **6.51%** | **-17.26%** | **21.91%** |
+| `stitched` | `2010-01-04` 至 `2026-06-02` | 分段串接 | **5.16%** | **-54.83%** | 待跑完整长历史 WF |
 
 目标效果：
 - walk-forward 的 train/test 折数从 4-10 折增加到 30+ 折
@@ -265,13 +276,31 @@ python -m quant_rotation fetch-real-data `
 
 **B3：重新校准 `market_score_threshold`**
 
-当前阈值为 0.0（市场得分 > 0 即满仓），过于激进。建议：
-- 在扩充数据集上对 threshold 做网格搜索：`[-0.05, -0.02, 0.0, 0.02, 0.05]`
-- 目标：在保持超额收益的同时，将月胜率从 29% 提升到 40% 以上
+当前生产阈值为 0.0（市场得分 > 0 即满仓），短样本和长历史给出不同偏好：
+- 2021-2026 全样本：`threshold=0.02` 最优，年化 **8.48%**、最大回撤 **-17.26%**、Sharpe **0.68**，但月胜率仍 **29.1%**。
+- 2010-2026 分段串接：`threshold=0.05` 最优，年化 **5.92%**、最大回撤 **-47.08%**、Sharpe **0.46**，但月胜率仅 **20.7%**。
+- `threshold=0.05` 的改善主要来自 2014-2021 段把最大回撤从 `threshold=0.00` 的 **-54.83%** 降到 **-47.08%**；2021-2026 段则弱于 `0.02`。
+
+已执行长历史复核命令：
+
+```powershell
+python -m quant_rotation sweep-segments `
+  --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml `
+  --industry-only `
+  --factor-set ret60_ret5 `
+  --top-k 5 `
+  --risk-off-exposure 0 `
+  --risk-control true `
+  --market-score-control true `
+  --market-score-threshold=-0.05,-0.02,0,0.02,0.05 `
+  --output-dir reports/segmented_threshold_sweep
+```
+
+结论：阈值越保守并不稳定提升月胜率，生产阈值暂保留 `0.0`。下一步应在分段 walk-forward 或按市场阶段切分后再决定是否采用 `0.02/0.05`。
 
 **B4：改进 walk-forward 候选选择指标**
 
-当前 composite metric 在训练期末段呈现"训练最差 → 测试最优"的异常现象。建议：
+当前 composite metric 在训练期末段呈现"训练最差 → 测试最优"的异常现象。已完成：
 
 1. 在 `validation.py` 中增加 `sharpe_plus_calmar` 备选指标（不包含 turnover 惩罚项）
 2. 将 `LOWER_IS_BETTER_METRICS` 中的 `average_turnover` 惩罚系数降低，避免过度惩罚高换手低回撤策略
@@ -422,29 +451,51 @@ python -m quant_rotation fetch-stock-data `
 
 ### 阶段 F：基本面 / 估值因子（10-16 周）
 
-这是计划中"第四阶段加宏观/估值"的完整实现。
+这是计划中"第四阶段加宏观/估值"的完整实现。当前工程框架已落地，真实生产验证仍依赖外部行业估值/景气数据。
 
-**F1：行业 PE/PB 历史分位数**
+**F1：行业 PE/PB 历史分位数（工程已完成，数据待接入）**
 
-从 AKShare 获取申万行业 PE（TTM）和 PB（LF）历史数据，计算**行业自身 3 年历史分位数**：
+已新增可选宽表 `industry_valuation.csv`，与 `industry_close.csv` 日期和行业列对齐。文件含义为行业自身历史估值分位数，范围 0-1，低分位代表更便宜，在因子打分中自动反向加分：
 
 ```python
 pe_percentile_i = 当前 PE 在过去 756 交易日（3年）中的分位数
 ```
 
-分位数低 = 估值便宜。作为**乘数过滤项**（而非加法打分项），例如：
-- 分位数 < 20%：score × 1.2（低估值加分）
-- 分位数 > 80%：score × 0.8（高估值减分）
+已接入位置：
+- `configs/*.toml` 支持 `industry_valuation` 与 `valuation_weight`
+- `compute_factor_snapshot()` 支持 `valuation` 字段，低分位高分
+- `decompose` / `sweep` / `validate` / `sweep-segments` 均可使用估值数据
+- sample 数据会生成 `data/sample/industry_valuation.csv`
 
-**F2：景气度代理因子**
+**F2：景气度代理因子（工程已完成，数据待接入）**
 
-在无法获取 PMI/社融数据的情况下，可用行业价量综合表现作为景气度代理：
+已新增可选宽表 `industry_prosperity.csv`，与 `industry_close.csv` 日期和行业列对齐。数值可以是标准化景气代理，数值越高得分越高：
 
 ```text
 prosperity_i = 0.5 * 行业近期成交额增速 + 0.5 * 行业内盈利修正方向
 ```
 
-或使用更简单的：行业指数过去 20 日创新高天数占比。
+已接入位置：
+- `configs/*.toml` 支持 `industry_prosperity` 与 `prosperity_weight`
+- `compute_factor_snapshot()` 支持 `prosperity` 字段
+- `sweep` 新增可请求候选：`ret60_valuation`、`ret60_ret5_valuation`、`ret60_prosperity`、`ret60_ret5_fundamental`
+- sample 数据会生成 `data/sample/industry_prosperity.csv`
+
+已验证 smoke test：
+
+```powershell
+python -m quant_rotation sweep `
+  --config configs/default.toml `
+  --industry-only `
+  --factor-set ret60_valuation,ret60_ret5_valuation,ret60_prosperity,ret60_ret5_fundamental `
+  --top-k 5 `
+  --risk-off-exposure 0 `
+  --risk-control false `
+  --market-score-control false `
+  --output-dir reports/sample_fundamental_sweep
+```
+
+剩余事项：接入真实行业 PE/PB 分位数、盈利修正或宏观景气代理数据后，在 `configs/production.toml` 之外单独建立研究配置验证；生产权重仍保持 `0.00`。
 
 ---
 
@@ -453,16 +504,16 @@ prosperity_i = 0.5 * 行业近期成交额增速 + 0.5 * 行业内盈利修正�
 | 优先级 | 任务 | 当前进度 | 预期收益 |
 |--------|------|----------|----------|
 | 🔴 P0 | **提交 production.toml**（关闭 ret20/amount_strength）| ✅ 已完成 | 立即改善全因子配置性能 |
-| 🔴 P0 | **扩充历史数据至 2010 年**（阶段 B1）| 🔎 已定位为行业分类版本问题；下一步实现分段行业宇宙数据与验证 | 解决验证不稳定的根本问题 |
+| 🔴 P0 | **扩充历史数据至 2010 年**（阶段 B1）| ✅ 分段行业宇宙数据、分段回测串接、分段参数扫描串接均已落地 | 解决验证不稳定的根本问题 |
 | 🟠 P1 | 多指数 market_close.csv（阶段 B2）| ✅ 已完成 | 改善市场环境判断准确性 |
-| 🟠 P1 | 重校 market_score_threshold（阶段 B3）| ⚠️ 阶段性完成，需长历史复核 | 提升月胜率 |
+| 🟠 P1 | 重校 market_score_threshold（阶段 B3）| ⚠️ 长历史复核已完成一轮；`0.05` 长历史最优但月胜率偏低，生产仍保留 `0.0` | 提升月胜率 |
 | 🟠 P1 | 扩大参数扫描候选集（阶段 D1）| ✅ 已完成 | 更全面的候选覆盖 |
 | 🟡 P2 | 广度数据管道 fetch-breadth-data（阶段 C1）| ✅ 阶段性完成：当前成分股近似版已实现，待历史快照复核 | 验证 Phase 3 有效性 |
 | 🟡 P2 | 改进 walk-forward 选择指标（阶段 B4）| ✅ 已完成 | 降低验证噪声 |
 | 🟡 P2 | 持有期 / 行业频率 / 风控频率报告（阶段 D2）| ✅ 已完成 | 解释调仓收益分布、行业拥挤度与风控触发来源 |
 | 🟡 P2 | 分年度超额等详细报告（阶段 D3）| ✅ 已完成 | 更清晰的策略诊断 |
 | 🟢 P3 | Phase 5 个股选择基础设施（阶段 E）| ✅ 阶段性完成：动态行业归属、按信号日选股、当前成分股股票数据管道已接入；历史成分快照版待建 | 从行业到股票的完整策略 |
-| 🟢 P3 | 估值/景气度因子（阶段 F）| ⏳ 未开始 | 在当前动量框架上叠加 |
+| 🟢 P3 | 估值/景气度因子（阶段 F）| ✅ 工程框架已完成；真实估值/景气数据待接入 | 在当前动量框架上叠加 |
 
 ---
 
@@ -470,10 +521,10 @@ prosperity_i = 0.5 * 行业近期成交额增速 + 0.5 * 行业内盈利修正�
 
 1. **策略框架已经可用**：`ret60_ret5_top5_riskoff0` 在 2021-2026 的数据上有明显的超额收益，累计跑赢沪深300 超 35%。
 
-2. **但验证结论尚不稳定**：4 年历史太短，10 折 walk-forward 中没有稳定优胜者。需要通过扩充历史数据来解决。
+2. **长历史验证已经有第一版，但结论仍需分层复核**：2010-2026 分段串接显示 `ret60_ret5_top5_riskoff0` 仍有正超额；阈值扫描中 `0.05` 改善长历史回撤，但月胜率偏低，不能直接定版。
 
 3. **精简比复杂更好**：`all_factors` 全因子版本被精简的 `ret60 + ret5` 显著击败，说明在当前数据量级下因子越多越容易过拟合。应坚持"少即是多"。
 
 4. **风控机制有效**：`riskoff0`（完全空仓）比 `riskoff0.5`（半仓）在回撤控制上更优，代价是月胜率低。这是一个权衡，后续可通过更精准的阈值来平衡。
 
-5. **下一个里程碑应该是**：在扩充至 2010 年的数据集上，重新运行完整的参数扫描和 walk-forward，确认 `ret60_ret5` 是否在多个市场周期下持续有效。若确认，则该策略可进入"模拟实盘验证"阶段。
+5. **下一个里程碑应该是**：基于 `sweep-segments` 和分段报告，复核 2014-2021 段极端回撤来源，并补充分段/长历史 walk-forward，确认 `ret60_ret5` 与市场阈值是否在多个市场周期下持续有效。若确认，则该策略可进入"模拟实盘验证"阶段。

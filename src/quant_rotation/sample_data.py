@@ -102,6 +102,11 @@ def generate_sample_data(output_dir: str | Path, days: int = 520, seed: int = 7)
     }
     industry_breadth20 = {industry: [0.50] for industry in INDUSTRIES}
     industry_breadth60 = {industry: [0.50] for industry in INDUSTRIES}
+    industry_valuation = {
+        industry: [_bounded(0.55 - 0.012 * (i % 7), low=0.02, high=0.98)]
+        for i, industry in enumerate(INDUSTRIES)
+    }
+    industry_prosperity = {industry: [0.0] for industry in INDUSTRIES}
     benchmark = [4000.0]
     market_prices = {
         "CSI300": [4000.0],
@@ -181,6 +186,19 @@ def generate_sample_data(output_dir: str | Path, days: int = 520, seed: int = 7)
             )
             industry_breadth20[industry].append(_bounded(breadth20))
             industry_breadth60[industry].append(_bounded(breadth60))
+            valuation = (
+                industry_valuation[industry][-1]
+                - 1.8 * ret
+                + 0.01 * math.sin(t / 37.0 + idx * 0.2)
+                + breadth_rng.gauss(0.0, 0.012)
+            )
+            industry_valuation[industry].append(_bounded(valuation, low=0.02, high=0.98))
+            prosperity = (
+                0.55 * (breadth20 - 0.50)
+                + 0.35 * (activity - 1.0)
+                + 18.0 * ret
+            )
+            industry_prosperity[industry].append(prosperity)
 
     with (path / "industry_close.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
@@ -273,6 +291,24 @@ def generate_sample_data(output_dir: str | Path, days: int = 520, seed: int = 7)
                         day.isoformat(),
                         *[
                             f"{breadth[industry][row_index]:.6f}"
+                            for industry in INDUSTRIES
+                        ],
+                    ]
+                )
+
+    for file_name, values in (
+        ("industry_valuation.csv", industry_valuation),
+        ("industry_prosperity.csv", industry_prosperity),
+    ):
+        with (path / file_name).open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["date", *INDUSTRIES])
+            for row_index, day in enumerate(dates):
+                writer.writerow(
+                    [
+                        day.isoformat(),
+                        *[
+                            f"{values[industry][row_index]:.6f}"
                             for industry in INDUSTRIES
                         ],
                     ]

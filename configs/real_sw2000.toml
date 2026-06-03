@@ -22,6 +22,8 @@ ret120_weight = 0.00
 amount_strength_weight = 0.00
 breadth20_weight = 0.00
 breadth60_weight = 0.00
+valuation_weight = 0.00
+prosperity_weight = 0.00
 vol20_weight = 0.00
 ret5_weight = -0.50
 

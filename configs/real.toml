@@ -4,6 +4,9 @@ industry_amount = "../data/real/industry_amount.csv"
 # Add precomputed constituent breadth files when available.
 # industry_breadth20 = "../data/real/industry_breadth20.csv"
 # industry_breadth60 = "../data/real/industry_breadth60.csv"
+# Add precomputed fundamental factor files when available.
+# industry_valuation = "../data/real/industry_valuation.csv"
+# industry_prosperity = "../data/real/industry_prosperity.csv"
 market_close = "../data/real/market_close.csv"
 # Add constituent stock data to enable phase-5 stock selection.
 # stock_close = "../data/real/stock_close.csv"
@@ -34,6 +37,8 @@ ret120_weight = 0.00
 amount_strength_weight = 0.00
 breadth20_weight = 0.00
 breadth60_weight = 0.00
+valuation_weight = 0.00
+prosperity_weight = 0.00
 vol20_weight = 0.00
 ret5_weight = -0.50
 # stock_ret20_weight = 0.45

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
 from quant_rotation.data import load_wide_close_csv
-from quant_rotation.models import StrategyConfig
+from quant_rotation.models import PriceData, StrategyConfig
 from quant_rotation.sample_data import generate_sample_data
 from quant_rotation.sweep import (
     build_parameter_sweep_specs,
@@ -101,6 +102,49 @@ class ParameterSweepTests(unittest.TestCase):
         )
         self.assertTrue(any("_mthrneg0p05" in spec.name for spec in specs))
         self.assertTrue(any("_mthr0p02" in spec.name for spec in specs))
+
+    def test_fundamental_factor_sets_are_available_with_data(self) -> None:
+        dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(130)]
+        closes = {
+            "a": [100.0 * (1.001**i) for i in range(130)],
+            "b": [100.0 * (1.002**i) for i in range(130)],
+        }
+        valuation_data = PriceData(
+            dates=dates,
+            closes={"a": [0.20] * 130, "b": [0.80] * 130},
+        )
+        prosperity_data = PriceData(
+            dates=dates,
+            closes={"a": [0.70] * 130, "b": [0.30] * 130},
+        )
+
+        specs = build_parameter_sweep_specs(
+            StrategyConfig(),
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
+            factor_set_names=(
+                "ret60_valuation",
+                "ret60_ret5_valuation",
+                "ret60_prosperity",
+                "ret60_ret5_fundamental",
+            ),
+            top_k_values=(1,),
+            risk_off_exposures=(0.0,),
+            risk_control_values=(False,),
+            market_score_control_values=(False,),
+        )
+
+        self.assertEqual(
+            {spec.factor_set for spec in specs},
+            {
+                "ret60_valuation",
+                "ret60_ret5_valuation",
+                "ret60_prosperity",
+                "ret60_ret5_fundamental",
+            },
+        )
+        self.assertTrue(any("valuation" in spec.factors for spec in specs))
+        self.assertTrue(any("prosperity" in spec.factors for spec in specs))
 
 
 if __name__ == "__main__":

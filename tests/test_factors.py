@@ -111,6 +111,60 @@ class FactorTests(unittest.TestCase):
                 breadth_data=breadth_data,
             )
 
+    def test_valuation_and_prosperity_affect_scores(self) -> None:
+        dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(130)]
+        closes = [100.0 * (1.001**i) for i in range(130)]
+        data = PriceData(
+            dates=dates,
+            closes={"cheap_growth": closes, "expensive_slow": closes},
+        )
+        valuation_data = PriceData(
+            dates=dates,
+            closes={
+                "cheap_growth": [0.15] * 130,
+                "expensive_slow": [0.85] * 130,
+            },
+        )
+        prosperity_data = PriceData(
+            dates=dates,
+            closes={
+                "cheap_growth": [0.80] * 130,
+                "expensive_slow": [0.20] * 130,
+            },
+        )
+
+        snapshot = compute_factor_snapshot(
+            data,
+            129,
+            FactorWeights(valuation=0.50, prosperity=0.50),
+            valuation_data=valuation_data,
+            prosperity_data=prosperity_data,
+        )
+
+        self.assertGreater(
+            snapshot.scores["cheap_growth"],
+            snapshot.scores["expensive_slow"],
+        )
+        self.assertIn("valuation", snapshot.fields)
+        self.assertIn("prosperity", snapshot.fields)
+
+    def test_valuation_rejects_values_outside_percentile_range(self) -> None:
+        dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(130)]
+        closes = [100.0 * (1.001**i) for i in range(130)]
+        data = PriceData(dates=dates, closes={"a": closes, "b": closes})
+        valuation_data = PriceData(
+            dates=dates,
+            closes={"a": [1.10] * 130, "b": [0.20] * 130},
+        )
+
+        with self.assertRaisesRegex(ValueError, "valuation values"):
+            compute_factor_snapshot(
+                data,
+                129,
+                FactorWeights(valuation=1.0),
+                valuation_data=valuation_data,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
