@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from .factors import compute_factor_snapshot, simple_return
 from .metrics import annual_returns, summarize_performance
 from .models import (
@@ -12,6 +14,60 @@ from .models import (
 )
 from .portfolio import equal_weight_target, turnover
 from .stock_selection import stock_target_weights
+
+
+def soft_risk_exposure(
+    market_score: float,
+    center: float = 0.0,
+    steepness: float = 20.0,
+    min_exp: float = 0.2,
+    max_exp: float = 1.0,
+) -> float:
+    raw = 1.0 / (1.0 + math.exp(-steepness * (market_score - center)))
+    return min_exp + (max_exp - min_exp) * raw
+
+
+def classify_market_state(
+    market_score: float,
+    benchmark_closes: list[float] | None,
+    signal_index: int,
+    ma_window: int,
+) -> str:
+    if signal_index < ma_window:
+        return "bull"
+    if benchmark_closes is not None:
+        moving_average = sum(
+            benchmark_closes[signal_index - ma_window + 1 : signal_index + 1]
+        ) / ma_window
+        trend_strength = (
+            benchmark_closes[signal_index] / moving_average - 1.0
+        )
+    else:
+        trend_strength = 0.0
+    if market_score > 0.05 and trend_strength > 0.03:
+        return "bull"
+    elif market_score < -0.03:
+        return "bear"
+    return "sideways"
+
+
+def _state_aware_exposure(
+    market_score: float,
+    benchmark_closes: list[float] | None,
+    signal_index: int,
+    ma_window: int,
+    trend_ok: bool,
+    bull_exposure: float = 1.0,
+    sideways_exposure: float = 0.5,
+    bear_exposure: float = 0.1,
+) -> float:
+    state = classify_market_state(market_score, benchmark_closes, signal_index, ma_window)
+    if state == "bull":
+        return bull_exposure
+    elif state == "bear":
+        return bear_exposure
+    else:
+        return sideways_exposure
 
 
 def _asset_returns(data: PriceData, index: int) -> dict[str, float]:
@@ -232,7 +288,41 @@ def run_backtest(
             )
             score_ok = score is None or score >= config.market_score_threshold
             risk_on = trend_ok and score_ok
-            exposure = 1.0 if risk_on else config.risk_off_exposure
+
+            if (
+                config.risk_control_mode == "soft"
+                and config.market_score_control
+                and score is not None
+            ):
+                exposure = soft_risk_exposure(
+                    score,
+                    center=config.soft_exposure_center,
+                    steepness=config.soft_exposure_steepness,
+                    min_exp=config.soft_exposure_min,
+                    max_exp=config.soft_exposure_max,
+                )
+                if config.risk_control and not trend_ok:
+                    exposure = min(exposure, config.soft_exposure_min)
+            elif (
+                config.state_aware_risk_control
+                and config.market_score_control
+                and score is not None
+                and config.risk_control
+            ):
+                exposure = _state_aware_exposure(
+                    score,
+                    benchmark_closes,
+                    signal_index,
+                    config.market_ma_window,
+                    trend_ok,
+                    bull_exposure=config.bull_exposure,
+                    sideways_exposure=config.sideways_exposure,
+                    bear_exposure=config.bear_exposure,
+                )
+                if not trend_ok:
+                    exposure = min(exposure, config.bear_exposure)
+            else:
+                exposure = 1.0 if risk_on else config.risk_off_exposure
             industry_target_weights = equal_weight_target(
                 snapshot.scores,
                 top_k=config.top_k,

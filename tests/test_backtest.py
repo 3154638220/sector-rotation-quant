@@ -5,7 +5,7 @@ import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
-from quant_rotation.backtest import run_backtest
+from quant_rotation.backtest import run_backtest, soft_risk_exposure
 from quant_rotation.data import (
     align_asset_data,
     align_benchmark,
@@ -150,6 +150,68 @@ class BacktestTests(unittest.TestCase):
         self.assertFalse(result.rebalances[0].market_score_ok)
         self.assertFalse(result.rebalances[0].risk_on)
         self.assertAlmostEqual(result.rebalances[0].exposure, 0.25)
+
+    def test_soft_risk_exposure_extremes(self) -> None:
+        self.assertAlmostEqual(soft_risk_exposure(0.0, center=0.0, steepness=20.0, min_exp=0.2, max_exp=1.0), 0.6, places=1)
+        self.assertAlmostEqual(soft_risk_exposure(-10.0, center=0.0, steepness=20.0, min_exp=0.2, max_exp=1.0), 0.2, places=4)
+        self.assertAlmostEqual(soft_risk_exposure(10.0, center=0.0, steepness=20.0, min_exp=0.2, max_exp=1.0), 1.0, places=4)
+        self.assertAlmostEqual(soft_risk_exposure(0.0, center=0.0, steepness=20.0, min_exp=0.3, max_exp=0.8), 0.55, places=1)
+
+    def test_soft_risk_exposure_reduces_drawdown_via_min_floor(self) -> None:
+        dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(150)]
+        prices = PriceData(
+            dates=dates,
+            closes={
+                "strong": [100.0 * (1.002**i) for i in range(150)],
+                "weak": [100.0 * (1.001**i) for i in range(150)],
+            },
+        )
+        market_data = PriceData(
+            dates=dates,
+            closes={
+                "Market": [100.0 * (0.98**i) for i in range(150)],
+            },
+        )
+
+        hard_result = run_backtest(
+            prices,
+            None,
+            StrategyConfig(
+                rebalance_every=20,
+                top_k=1,
+                max_industry_weight=1.0,
+                risk_control=False,
+                market_score_control=True,
+                market_score_window=20,
+                risk_off_exposure=0.0,
+                risk_control_mode="hard",
+            ),
+            market_data=market_data,
+        )
+        self.assertGreater(len(hard_result.rebalances), 0)
+        self.assertEqual(hard_result.rebalances[0].exposure, 0.0)
+
+        soft_result = run_backtest(
+            prices,
+            None,
+            StrategyConfig(
+                rebalance_every=20,
+                top_k=1,
+                max_industry_weight=1.0,
+                risk_control=False,
+                market_score_control=True,
+                market_score_window=20,
+                risk_control_mode="soft",
+                soft_exposure_min=0.2,
+                soft_exposure_max=1.0,
+                soft_exposure_center=0.0,
+                soft_exposure_steepness=20.0,
+            ),
+            market_data=market_data,
+        )
+        self.assertGreater(len(soft_result.rebalances), 0)
+        self.assertGreater(soft_result.rebalances[0].exposure, 0.0)
+        self.assertLess(soft_result.rebalances[0].exposure, 0.5)
 
 
 if __name__ == "__main__":

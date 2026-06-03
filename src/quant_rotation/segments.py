@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+import math
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from .metrics import annual_returns, summarize_performance
-from .models import BacktestResult
+from .models import BacktestResult, PriceData
 from .reports import write_reports
 from .sweep import METRIC_ORDER, ParameterSweepRun, write_parameter_sweep_reports
 
@@ -349,3 +351,56 @@ def _write_segmented_sweep_segments(
                     ],
                 ]
             )
+
+
+def merge_segment_price_data(
+    segments: list[tuple[PriceData, str]],
+    fill_missing: bool = True,
+) -> PriceData:
+    if not segments:
+        raise ValueError("At least one segment is required")
+
+    all_dates: list[date] = []
+    all_industries: list[str] = []
+    industry_sets: list[set[str]] = []
+    for data, _ in segments:
+        all_dates.extend(data.dates)
+        industries = set(data.assets)
+        industry_sets.append(industries)
+        for ind in sorted(industries):
+            if ind not in all_industries:
+                all_industries.append(ind)
+
+    if not all_industries:
+        raise ValueError("No industries found across segments")
+
+    common_industries = sorted(set.intersection(*industry_sets))
+    if common_industries:
+        all_industries = common_industries
+
+    closes: dict[str, list[float]] = {ind: [] for ind in all_industries}
+    for data, _ in segments:
+        for ind in all_industries:
+            if ind in data.closes:
+                closes[ind].extend(data.closes[ind])
+            elif fill_missing:
+                closes[ind].extend([math.nan] * len(data.dates))
+            else:
+                raise ValueError(
+                    f"Industry {ind!r} missing from segment; use fill_missing=True"
+                )
+
+    return PriceData(dates=all_dates, closes=closes)
+
+
+def merge_benchmark_closes(
+    segments: list[tuple[list[date], list[float], str]],
+) -> list[float] | None:
+    if not segments:
+        return None
+    if any(bench is None for _, bench, _ in segments):
+        return None
+    merged: list[float] = []
+    for _, bench, _ in segments:
+        merged.extend(bench)
+    return merged

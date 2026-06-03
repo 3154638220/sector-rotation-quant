@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from datetime import date
-from statistics import mean, median, pstdev
+from statistics import mean, median, pstdev, stdev
 from pathlib import Path
 
 from .metrics import annual_returns, summarize_performance
@@ -18,7 +18,9 @@ from .sweep import (
     DEFAULT_FACTOR_SET_NAMES,
     DEFAULT_MARKET_SCORE_THRESHOLDS,
     DEFAULT_RISK_CONTROL_VALUES,
+    DEFAULT_RISK_CONTROL_MODE_VALUES,
     DEFAULT_RISK_OFF_EXPOSURES,
+    DEFAULT_SOFT_EXPOSURE_MIN_VALUES,
     DEFAULT_TOP_K_VALUES,
     METRIC_ORDER,
     ParameterSweepRun,
@@ -28,6 +30,8 @@ from .sweep import (
 
 DEFAULT_SELECTION_METRIC = "composite"
 SHARPE_PLUS_CALMAR_SELECTION_METRIC = "sharpe_plus_calmar"
+RECENT_WEIGHTED_COMPOSITE_METRIC = "recent_weighted_composite"
+REGIME_AWARE_SELECTION_METRIC = "regime_aware"
 COMPOSITE_TURNOVER_PENALTY = 0.25
 COMPOSITE_SELECTION_FIELDS = (
     "excess_return_vs_equal_weight",
@@ -243,10 +247,82 @@ def _segment_metrics(
     return metrics, annual_returns(dates, strategy_equity)
 
 
+def _recent_weighted_score(
+    metrics: dict[str, float],
+    train_dates: list[date] | None,
+    train_equity: list[float] | None,
+) -> float:
+    if train_dates is None or train_equity is None:
+        return selection_score(metrics, DEFAULT_SELECTION_METRIC)
+    if "sharpe_ratio" not in metrics:
+        raise ValueError("recent_weighted_composite requires sharpe_ratio")
+    recent_sharpe = _compute_recent_sharpe(train_dates, train_equity)
+    overall_sharpe = metrics["sharpe_ratio"]
+    weighted_sharpe = 0.6 * recent_sharpe + 0.4 * overall_sharpe
+    return (
+        metrics.get("excess_return_vs_equal_weight", 0.0)
+        + metrics.get("calmar_ratio", 0.0)
+        + weighted_sharpe
+        - COMPOSITE_TURNOVER_PENALTY * metrics.get("average_turnover", 0.0)
+        - abs(metrics.get("max_drawdown", 0.0))
+    )
+
+
+def _compute_recent_sharpe(
+    train_dates: list[date],
+    train_equity: list[float],
+    lookback_days: int = 252,
+) -> float:
+    if len(train_equity) < 2:
+        return 0.0
+    start_idx = max(0, len(train_equity) - lookback_days - 1)
+    recent_equity = train_equity[start_idx:]
+    returns: list[float] = []
+    for i in range(1, len(recent_equity)):
+        if recent_equity[i - 1] != 0:
+            returns.append(recent_equity[i] / recent_equity[i - 1] - 1.0)
+    if not returns or stdev(returns) == 0:
+        return 0.0
+    daily_sr = mean(returns) / stdev(returns)
+    return daily_sr * (252 ** 0.5)
+
+
+def _classify_metrics_regime(metrics: dict[str, float]) -> str:
+    monthly_win_rate = metrics.get("monthly_win_rate", 0.0)
+    sharpe = metrics.get("sharpe_ratio", 0.0)
+    dd = abs(metrics.get("max_drawdown", 0.0))
+    if sharpe > 0.3 and monthly_win_rate > 0.45 and dd < 0.20:
+        return "bull"
+    elif sharpe < 0.0 and dd > 0.20:
+        return "bear"
+    return "sideways"
+
+
+def _regime_aware_score(metrics: dict[str, float]) -> float:
+    regime = _classify_metrics_regime(metrics)
+    if regime == "bear":
+        return metrics.get("calmar_ratio", 0.0)
+    elif regime == "bull":
+        return metrics.get("excess_return_vs_equal_weight", 0.0)
+    else:
+        return metrics.get("sharpe_ratio", 0.0) - abs(metrics.get("max_drawdown", 0.0))
+
+
 def selection_score(
     metrics: dict[str, float],
     selection_metric: str = DEFAULT_SELECTION_METRIC,
+    train_dates: list[date] | None = None,
+    train_equity: list[float] | None = None,
 ) -> float:
+    if train_dates is not None and train_equity is not None:
+        _ = train_dates, train_equity
+    if selection_metric == RECENT_WEIGHTED_COMPOSITE_METRIC:
+        return _recent_weighted_score(
+            metrics, train_dates, train_equity,
+        )
+    if selection_metric == REGIME_AWARE_SELECTION_METRIC:
+        return selection_score(metrics, DEFAULT_SELECTION_METRIC)
+
     if selection_metric == DEFAULT_SELECTION_METRIC:
         missing = [
             metric
@@ -295,6 +371,8 @@ def run_train_test_validation(
     risk_control_values: tuple[bool, ...] = DEFAULT_RISK_CONTROL_VALUES,
     market_score_control_values: tuple[bool, ...] | None = None,
     market_score_threshold_values: tuple[float, ...] = DEFAULT_MARKET_SCORE_THRESHOLDS,
+    risk_control_mode_values: tuple[str, ...] = DEFAULT_RISK_CONTROL_MODE_VALUES,
+    soft_exposure_min_values: tuple[float, ...] = DEFAULT_SOFT_EXPOSURE_MIN_VALUES,
     train_end: date | None = None,
     test_start: date | None = None,
     split_ratio: float = 0.70,
@@ -324,6 +402,8 @@ def run_train_test_validation(
         risk_control_values=risk_control_values,
         market_score_control_values=market_score_control_values,
         market_score_threshold_values=market_score_threshold_values,
+        risk_control_mode_values=risk_control_mode_values,
+        soft_exposure_min_values=soft_exposure_min_values,
     )
     return _validation_runs_for_split(sweep_runs, split)
 
@@ -379,6 +459,8 @@ def run_walk_forward_validation(
     risk_control_values: tuple[bool, ...] = DEFAULT_RISK_CONTROL_VALUES,
     market_score_control_values: tuple[bool, ...] | None = None,
     market_score_threshold_values: tuple[float, ...] = DEFAULT_MARKET_SCORE_THRESHOLDS,
+    risk_control_mode_values: tuple[str, ...] = DEFAULT_RISK_CONTROL_MODE_VALUES,
+    soft_exposure_min_values: tuple[float, ...] = DEFAULT_SOFT_EXPOSURE_MIN_VALUES,
     train_window: int = 504,
     test_window: int = 126,
     step: int | None = None,
@@ -410,6 +492,8 @@ def run_walk_forward_validation(
         risk_control_values=risk_control_values,
         market_score_control_values=market_score_control_values,
         market_score_threshold_values=market_score_threshold_values,
+        risk_control_mode_values=risk_control_mode_values,
+        soft_exposure_min_values=soft_exposure_min_values,
     )
 
     return [
@@ -470,6 +554,40 @@ def selected_by_train(
     if not runs:
         raise ValueError("Train/test validation requires at least one run")
     return _ranked_by_train(runs, selection_metric)[0]
+
+
+def selected_by_train_with_data(
+    runs: list[TrainTestValidationRun],
+    selection_metric: str = DEFAULT_SELECTION_METRIC,
+) -> TrainTestValidationRun:
+    if not runs:
+        raise ValueError("Train/test validation requires at least one run")
+    if selection_metric not in (
+        RECENT_WEIGHTED_COMPOSITE_METRIC,
+        REGIME_AWARE_SELECTION_METRIC,
+    ):
+        return selected_by_train(runs, selection_metric)
+
+    def _score(run: TrainTestValidationRun) -> float:
+        result = run.sweep_run.result
+        train_equity = result.strategy_equity[
+            run.split.train_start_index : run.split.train_end_index + 1
+        ]
+        train_dates = result.dates[
+            run.split.train_start_index : run.split.train_end_index + 1
+        ]
+        if selection_metric == RECENT_WEIGHTED_COMPOSITE_METRIC:
+            return _recent_weighted_score(
+                run.train_metrics,
+                train_dates,
+                train_equity,
+            )
+        elif selection_metric == REGIME_AWARE_SELECTION_METRIC:
+            return _regime_aware_score(run.train_metrics)
+        return selection_score(run.train_metrics, selection_metric)
+
+    best = max(runs, key=_score)
+    return best
 
 
 def write_train_test_validation_reports(
@@ -771,7 +889,7 @@ def _write_walk_forward_folds(
     path: Path,
     selection_metric: str,
 ) -> None:
-    selected_runs = [selected_by_train(fold.runs, selection_metric) for fold in folds]
+    selected_runs = [selected_by_train_with_data(fold.runs, selection_metric) for fold in folds]
     metric_columns = _metric_columns(selected_runs)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
@@ -862,7 +980,7 @@ def _write_walk_forward_selected_equity(
             header.append("benchmark")
         writer.writerow(header)
         for fold in folds:
-            selected = selected_by_train(fold.runs, selection_metric)
+            selected = selected_by_train_with_data(fold.runs, selection_metric)
             result = selected.sweep_run.result
             split = selected.split
             for segment, start_index, end_index in (
@@ -917,7 +1035,7 @@ def _write_walk_forward_oos_equity(
         writer.writerow(header)
 
         for fold in folds:
-            selected = selected_by_train(fold.runs, selection_metric)
+            selected = selected_by_train_with_data(fold.runs, selection_metric)
             result = selected.sweep_run.result
             split = selected.split
             strategy_equity = _segment_equity(
@@ -1079,7 +1197,7 @@ def _write_walk_forward_summary(
     path: Path,
     selection_metric: str,
 ) -> None:
-    selected_runs = [selected_by_train(fold.runs, selection_metric) for fold in folds]
+    selected_runs = [selected_by_train_with_data(fold.runs, selection_metric) for fold in folds]
     metric_columns = _metric_columns(selected_runs)
     selection_counts: dict[str, int] = {}
     for run in selected_runs:

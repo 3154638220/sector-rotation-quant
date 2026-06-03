@@ -122,6 +122,15 @@ class StrategyConfig:
     market_score_window: int = 60
     market_score_threshold: float = 0.0
     risk_off_exposure: float = 0.50
+    risk_control_mode: str = "hard"
+    soft_exposure_min: float = 0.20
+    soft_exposure_max: float = 1.00
+    soft_exposure_center: float = 0.00
+    soft_exposure_steepness: float = 20.0
+    state_aware_risk_control: bool = False
+    bull_exposure: float = 1.00
+    sideways_exposure: float = 0.50
+    bear_exposure: float = 0.10
     factor_weights: FactorWeights = field(default_factory=FactorWeights)
     stock_selection: StockSelectionConfig = field(default_factory=StockSelectionConfig)
 

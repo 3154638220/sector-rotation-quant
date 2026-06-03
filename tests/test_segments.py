@@ -15,6 +15,8 @@ from quant_rotation.segments import (
     stitch_backtest_segments,
     write_segmented_backtest_reports,
     write_segmented_parameter_sweep_reports,
+    merge_segment_price_data,
+    merge_benchmark_closes,
 )
 from quant_rotation.sweep import run_parameter_sweep
 
@@ -138,6 +140,100 @@ class SegmentedBacktestTests(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn("stitched", segment_text)
+
+    def test_merge_segment_price_data_combines_two_segments(self) -> None:
+        from datetime import date
+        seg1 = PriceData(
+            dates=[date(2024, 1, 1), date(2024, 1, 2)],
+            closes={"A": [100.0, 101.0], "B": [200.0, 201.0]},
+        )
+        seg2 = PriceData(
+            dates=[date(2024, 1, 3), date(2024, 1, 4)],
+            closes={"A": [102.0, 103.0], "B": [202.0, 203.0]},
+        )
+        merged = merge_segment_price_data(
+            [(seg1, "s1"), (seg2, "s2")], fill_missing=True,
+        )
+        self.assertEqual(len(merged.dates), 4)
+        self.assertEqual(merged.assets, ["A", "B"])
+        self.assertEqual(merged.closes["A"], [100.0, 101.0, 102.0, 103.0])
+
+    def test_merge_filters_to_common_industries(self) -> None:
+        from datetime import date
+        seg1 = PriceData(
+            dates=[date(2024, 1, 1)],
+            closes={"A": [100.0], "B": [200.0], "C": [300.0]},
+        )
+        seg2 = PriceData(
+            dates=[date(2024, 1, 2)],
+            closes={"A": [101.0], "B": [201.0]},
+        )
+        merged = merge_segment_price_data(
+            [(seg1, "s1"), (seg2, "s2")], fill_missing=True,
+        )
+        self.assertEqual(merged.assets, ["A", "B"])
+        self.assertNotIn("C", merged.closes)
+
+    def test_merge_fills_missing_industries_with_nan(self) -> None:
+        from datetime import date
+        import math
+        seg1 = PriceData(
+            dates=[date(2024, 1, 1)],
+            closes={"A": [100.0], "B": [200.0]},
+        )
+        seg2 = PriceData(
+            dates=[date(2024, 1, 2)],
+            closes={"A": [101.0], "B": [201.0], "C": [300.0]},
+        )
+        seg3 = PriceData(
+            dates=[date(2024, 1, 3)],
+            closes={"A": [102.0], "B": [202.0]},
+        )
+        merged = merge_segment_price_data(
+            [(seg1, "s1"), (seg2, "s2"), (seg3, "s3")],
+            fill_missing=True,
+        )
+        self.assertEqual(merged.assets, ["A", "B"])
+        self.assertEqual(len(merged.closes["A"]), 3)
+
+    def test_merge_benchmark_closes_combines_lists(self) -> None:
+        from datetime import date
+        merged = merge_benchmark_closes(
+            [
+                ([date(2024, 1, 1)], [100.0, 101.0], "s1"),
+                ([date(2024, 1, 3)], [102.0, 103.0], "s2"),
+            ]
+        )
+        self.assertEqual(merged, [100.0, 101.0, 102.0, 103.0])
+
+    def test_merge_benchmark_returns_none_when_any_segment_has_none(self) -> None:
+        from datetime import date
+        merged = merge_benchmark_closes(
+            [
+                ([date(2024, 1, 1)], [100.0, 101.0], "s1"),
+                ([], None, "s2"),
+            ]
+        )
+        self.assertIsNone(merged)
+
+    def test_merge_rejects_empty_segments_list(self) -> None:
+        with self.assertRaises(ValueError):
+            merge_segment_price_data([], fill_missing=True)
+
+    def test_merge_demands_fill_missing_when_industry_disappears(self) -> None:
+        from datetime import date
+        seg1 = PriceData(
+            dates=[date(2024, 1, 1)],
+            closes={"A": [100.0], "B": [200.0], "C": [300.0]},
+        )
+        seg2 = PriceData(
+            dates=[date(2024, 1, 2)],
+            closes={"A": [101.0]},
+        )
+        merged = merge_segment_price_data(
+            [(seg1, "s1"), (seg2, "s2")], fill_missing=False,
+        )
+        self.assertEqual(merged.assets, ["A"])
 
 
 if __name__ == "__main__":

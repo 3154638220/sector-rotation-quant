@@ -873,6 +873,40 @@ def _write_industry_amount(path: Path, data: PriceData) -> None:
             )
 
 
+def _write_industry_append(path: Path, data: PriceData) -> None:
+    assets = data.assets
+    header = ["date", *assets]
+    rows = []
+    for row_index, day in enumerate(data.dates):
+        rows.append(
+            [
+                day.isoformat(),
+                *[f"{data.closes[asset][row_index]:.4f}" for asset in assets],
+            ]
+        )
+    _append_csv_rows(path, header, rows)
+
+
+def _write_industry_amount_append(path: Path, data: PriceData) -> None:
+    assets = data.assets
+    header = ["date", *assets]
+    rows = []
+    for row_index, day in enumerate(data.dates):
+        rows.append(
+            [
+                day.isoformat(),
+                *[f"{data.closes[asset][row_index]:.2f}" for asset in assets],
+            ]
+        )
+    _append_csv_rows(path, header, rows)
+
+
+def _write_benchmark_append(path: Path, dates: list[date], closes: dict[date, float]) -> None:
+    header = ["date", "close"]
+    rows = [[day.isoformat(), f"{closes[day]:.4f}"] for day in dates]
+    _append_csv_rows(path, header, rows)
+
+
 def _write_market_close(path: Path, data: PriceData) -> None:
     _write_industry_close(path, data)
 
@@ -908,6 +942,67 @@ def _slice_price_data(data: PriceData, dates: list[date]) -> PriceData:
     return PriceData(dates=dates, closes=closes)
 
 
+def _load_manifest_last_date(output_path: Path) -> date | None:
+    manifest_path = output_path / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+            return date.fromisoformat(data["end"])
+    except (KeyError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def _read_csv_last_date(path: Path) -> date | None:
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.reader(handle)
+        next(reader, None)
+        last_date = None
+        for row in reader:
+            if row:
+                try:
+                    last_date = date.fromisoformat(row[0])
+                except (ValueError, IndexError):
+                    pass
+        return last_date
+
+
+def _append_csv_rows(path: Path, header: list[str], rows: list[list[str]]) -> None:
+    exists = path.exists()
+    with path.open("a", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        if not exists:
+            writer.writerow(header)
+        for row in rows:
+            writer.writerow(row)
+
+
+def _update_manifest(
+    output_path: Path,
+    end_date: date,
+    new_rows: int,
+    extra: dict | None = None,
+) -> None:
+    manifest_path = output_path / "manifest.json"
+    manifest = {}
+    if manifest_path.exists():
+        try:
+            with manifest_path.open("r", encoding="utf-8") as handle:
+                manifest = json.load(handle)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    manifest["end"] = end_date.isoformat()
+    manifest["rows"] = new_rows
+    if extra:
+        manifest.update(extra)
+    manifest["generated_at"] = datetime.now().isoformat(timespec="seconds")
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, ensure_ascii=False, indent=2)
+
+
 def write_real_data_files(
     output_dir: str | Path,
     industry_data: PriceData,
@@ -920,6 +1015,7 @@ def write_real_data_files(
     industry_universe: str | None = None,
     industry_symbols: dict[str, str] | None = None,
     provider: str = "akshare",
+    update_mode: str = "replace",
 ) -> RealDataSummary:
     if amount_data is not None and amount_data.assets != industry_data.assets:
         raise ValueError("Amount data assets must match industry data assets")
@@ -946,12 +1042,27 @@ def write_real_data_files(
     benchmark_path = output_path / "benchmark_close.csv"
     manifest_path = output_path / "manifest.json"
 
-    _write_industry_close(industry_path, aligned_industry_data)
-    if aligned_amount_data and amount_path:
-        _write_industry_amount(amount_path, aligned_amount_data)
-    if aligned_market_data and market_path:
-        _write_market_close(market_path, aligned_market_data)
-    _write_benchmark_close(benchmark_path, common_dates, benchmark_closes)
+    if update_mode == "append":
+        _write_industry_append(industry_path, aligned_industry_data)
+        if aligned_amount_data and amount_path:
+            _write_industry_amount_append(amount_path, aligned_amount_data)
+        if aligned_market_data and market_path:
+            _write_industry_append(market_path, aligned_market_data)
+        _write_benchmark_append(benchmark_path, common_dates, benchmark_closes)
+        total_rows = _read_csv_last_date(industry_path)
+        if total_rows:
+            total_rows = (total_rows - date.fromisoformat(common_dates[0].isoformat())).days
+            total_rows = len(common_dates)
+        else:
+            total_rows = len(common_dates)
+    else:
+        _write_industry_close(industry_path, aligned_industry_data)
+        if aligned_amount_data and amount_path:
+            _write_industry_amount(amount_path, aligned_amount_data)
+        if aligned_market_data and market_path:
+            _write_market_close(market_path, aligned_market_data)
+        _write_benchmark_close(benchmark_path, common_dates, benchmark_closes)
+        total_rows = len(common_dates)
 
     manifest = {
         "provider": provider,
@@ -959,7 +1070,7 @@ def write_real_data_files(
         "benchmark_symbol": benchmark_symbol,
         "start": common_dates[0].isoformat(),
         "end": common_dates[-1].isoformat(),
-        "rows": len(common_dates),
+        "rows": total_rows,
         "industries": len(aligned_industry_data.assets),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "files": {
@@ -1217,7 +1328,21 @@ def fetch_and_write_real_data(
     market_indices: list[IndexInfo] | None = None,
     progress: ProgressCallback | None = None,
     request_interval: float = 0.0,
+    update_mode: str = "replace",
 ) -> RealDataSummary:
+    output_path = Path(output_dir)
+    if update_mode == "append":
+        last_date = _load_manifest_last_date(output_path)
+        if last_date is not None and last_date >= end:
+            raise ValueError(
+                f"Manifest last_date {last_date.isoformat()} >= end {end.isoformat()}; "
+                "nothing to append"
+            )
+        if last_date is not None and last_date >= start:
+            start = last_date + timedelta(days=1)
+            if progress:
+                progress(f"Appending from {start.isoformat()} (manifest last_date + 1)")
+
     ak = _require_akshare()
     industry_infos = (
         industries
@@ -1265,4 +1390,5 @@ def fetch_and_write_real_data(
         market_symbols=market_symbols,
         industry_universe="custom" if industries is not None else industry_universe,
         industry_symbols={info.name: info.code for info in industry_infos},
+        update_mode=update_mode,
     )

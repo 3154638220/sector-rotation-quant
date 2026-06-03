@@ -27,6 +27,7 @@ from .real_data import (
     sw_level1_universe_names,
 )
 from .reports import write_reports
+from .plot import write_html_report
 from .sample_data import generate_sample_data
 from .segments import (
     SegmentParameterSweepRuns,
@@ -35,6 +36,8 @@ from .segments import (
     stitch_backtest_segments,
     write_segmented_backtest_reports,
     write_segmented_parameter_sweep_reports,
+    merge_segment_price_data,
+    merge_benchmark_closes,
 )
 from .sweep import run_parameter_sweep, write_parameter_sweep_reports
 from .sweep import (
@@ -42,6 +45,8 @@ from .sweep import (
     DEFAULT_MARKET_SCORE_THRESHOLDS,
     DEFAULT_RISK_CONTROL_VALUES,
     DEFAULT_RISK_OFF_EXPOSURES,
+    DEFAULT_RISK_CONTROL_MODE_VALUES,
+    DEFAULT_SOFT_EXPOSURE_MIN_VALUES,
     DEFAULT_TOP_K_VALUES,
 )
 from .validation import (
@@ -49,6 +54,7 @@ from .validation import (
     run_walk_forward_validation,
     run_train_test_validation,
     selected_by_train,
+    selected_by_train_with_data,
     write_walk_forward_validation_reports,
     write_train_test_validation_reports,
 )
@@ -120,6 +126,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Overrides --industry-universe when provided."
         ),
     )
+    fetch.add_argument(
+        "--update-mode",
+        default="replace",
+        choices=("replace", "append"),
+        help=(
+            "Update mode. replace overwrites all files; append fetches only "
+            "new data after the last date in manifest.json."
+        ),
+    )
 
     breadth = subparsers.add_parser(
         "fetch-breadth-data",
@@ -172,6 +187,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Defaults to all detected SW level-1 industries."
         ),
     )
+    breadth.add_argument(
+        "--update-mode",
+        default="replace",
+        choices=("replace", "append"),
+        help=(
+            "Update mode. replace overwrites all files; append fetches only "
+            "new data after the last date in breadth_manifest.json."
+        ),
+    )
 
     stock = subparsers.add_parser(
         "fetch-stock-data",
@@ -211,6 +235,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional comma-separated SW industry index list as NAME:CODE. "
             "Defaults to all detected SW level-1 industries."
+        ),
+    )
+    stock.add_argument(
+        "--update-mode",
+        default="replace",
+        choices=("replace", "append"),
+        help=(
+            "Update mode. replace overwrites all files; append fetches only "
+            "new data after the last date in stock_manifest.json."
         ),
     )
 
@@ -289,6 +322,19 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated market score threshold values, e.g. "
             "-0.05,-0.02,0,0.02,0.05. Values only expand candidates where "
             "market_score_control is true."
+        ),
+    )
+    sweep_segments.add_argument(
+        "--risk-control-mode",
+        default=",".join(DEFAULT_RISK_CONTROL_MODE_VALUES),
+        help="Comma-separated risk control modes: hard, soft",
+    )
+    sweep_segments.add_argument(
+        "--soft-exposure-min",
+        default=",".join(str(v) for v in DEFAULT_SOFT_EXPOSURE_MIN_VALUES),
+        help=(
+            "Comma-separated soft exposure min values, e.g. 0.1,0.2,0.3. "
+            "Only used when risk-control-mode includes soft."
         ),
     )
     sweep_segments.add_argument(
@@ -375,6 +421,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sweep.add_argument(
+        "--risk-control-mode",
+        default=",".join(DEFAULT_RISK_CONTROL_MODE_VALUES),
+        help="Comma-separated risk control modes: hard, soft",
+    )
+    sweep.add_argument(
+        "--soft-exposure-min",
+        default=",".join(str(v) for v in DEFAULT_SOFT_EXPOSURE_MIN_VALUES),
+        help=(
+            "Comma-separated soft exposure min values, e.g. 0.1,0.2,0.3. "
+            "Only used when risk-control-mode includes soft."
+        ),
+    )
+    sweep.add_argument(
+        "--state-aware-risk-control",
+        default="false",
+        help="Comma-separated state_aware_risk_control values, e.g. false,true",
+    )
+    sweep.add_argument(
         "--top-n-equity",
         type=int,
         default=10,
@@ -438,6 +502,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     validate.add_argument(
+        "--risk-control-mode",
+        default=",".join(DEFAULT_RISK_CONTROL_MODE_VALUES),
+        help="Comma-separated risk control modes: hard, soft",
+    )
+    validate.add_argument(
+        "--soft-exposure-min",
+        default=",".join(str(v) for v in DEFAULT_SOFT_EXPOSURE_MIN_VALUES),
+        help=(
+            "Comma-separated soft exposure min values, e.g. 0.1,0.2,0.3. "
+            "Only used when risk-control-mode includes soft."
+        ),
+    )
+    validate.add_argument(
         "--selection-metric",
         default=DEFAULT_SELECTION_METRIC,
         help=(
@@ -489,6 +566,129 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-partial-fold",
         action="store_true",
         help="Include a final shorter test fold when enough observations remain",
+    )
+    validate_segments = subparsers.add_parser(
+        "validate-segments",
+        help="Run walk-forward validation over merged segment data",
+    )
+    validate_segments.add_argument(
+        "--configs",
+        nargs="+",
+        required=True,
+        help="Ordered segment config paths, e.g. configs/real_sw2000.toml configs/real_sw2014.toml",
+    )
+    validate_segments.add_argument(
+        "--output-dir",
+        default="reports/cross_segment_walk_forward",
+        help="Output directory for cross-segment validation reports",
+    )
+    validate_segments.add_argument(
+        "--industry-only",
+        action="store_true",
+        help="Disable configured stock selection for cleaner industry-factor attribution",
+    )
+    validate_segments.add_argument(
+        "--top-k",
+        default=",".join(str(value) for value in DEFAULT_TOP_K_VALUES),
+        help="Comma-separated top_k values, e.g. 5",
+    )
+    validate_segments.add_argument(
+        "--factor-set",
+        default=",".join(DEFAULT_FACTOR_SET_NAMES),
+        help="Comma-separated factor sets, e.g. ret60,ret60_ret5",
+    )
+    validate_segments.add_argument(
+        "--risk-off-exposure",
+        default=",".join(str(value) for value in DEFAULT_RISK_OFF_EXPOSURES),
+        help="Comma-separated risk-off exposure values, e.g. 0,0.3,0.5",
+    )
+    validate_segments.add_argument(
+        "--risk-control",
+        default=",".join("true" if value else "false" for value in DEFAULT_RISK_CONTROL_VALUES),
+        help="Comma-separated risk_control values, e.g. false,true",
+    )
+    validate_segments.add_argument(
+        "--market-score-control",
+        default="auto",
+        help=(
+            "Comma-separated market_score_control values, e.g. false,true. "
+            "Use auto to include true only when market data or benchmark exists."
+        ),
+    )
+    validate_segments.add_argument(
+        "--market-score-threshold",
+        default=",".join(str(value) for value in DEFAULT_MARKET_SCORE_THRESHOLDS),
+        help=(
+            "Comma-separated market score threshold values, e.g. "
+            "-0.05,-0.02,0,0.02,0.05. Values only expand candidates where "
+            "market_score_control is true."
+        ),
+    )
+    validate_segments.add_argument(
+        "--risk-control-mode",
+        default=",".join(DEFAULT_RISK_CONTROL_MODE_VALUES),
+        help="Comma-separated risk control modes: hard, soft",
+    )
+    validate_segments.add_argument(
+        "--soft-exposure-min",
+        default=",".join(str(v) for v in DEFAULT_SOFT_EXPOSURE_MIN_VALUES),
+        help=(
+            "Comma-separated soft exposure min values, e.g. 0.1,0.2,0.3. "
+            "Only used when risk-control-mode includes soft."
+        ),
+    )
+    validate_segments.add_argument(
+        "--selection-metric",
+        default=DEFAULT_SELECTION_METRIC,
+        help=(
+            "Metric used to rank train folds. Use composite for "
+            "excess+Calmar+Sharpe-turnover-drawdown, or a metric column name "
+            "such as annualized_return."
+        ),
+    )
+    validate_segments.add_argument(
+        "--walk-forward",
+        action="store_true",
+        default=True,
+        help="Run rolling walk-forward multi-fold validation (always on for this command)",
+    )
+    validate_segments.add_argument(
+        "--train-window",
+        type=int,
+        default=504,
+        help="Walk-forward train window length in observations",
+    )
+    validate_segments.add_argument(
+        "--test-window",
+        type=int,
+        default=126,
+        help="Walk-forward test window length in observations",
+    )
+    validate_segments.add_argument(
+        "--step",
+        type=int,
+        default=None,
+        help="Walk-forward step length in observations. Defaults to test-window.",
+    )
+    validate_segments.add_argument(
+        "--include-partial-fold",
+        action="store_true",
+        help="Include a final shorter test fold when enough observations remain",
+    )
+
+    plot_cmd = subparsers.add_parser(
+        "plot",
+        help="Generate HTML report with charts from backtest output",
+    )
+    plot_cmd.add_argument(
+        "--report-dir",
+        default="reports/production",
+        help="Directory containing backtest output CSVs",
+    )
+    plot_cmd.add_argument(
+        "--output",
+        default=None,
+        help="Output directory for HTML report. Defaults to report-dir.",
     )
     return parser
 
@@ -728,6 +928,14 @@ def sweep_segments_command(args: argparse.Namespace) -> int:
         args.market_score_threshold,
         "--market-score-threshold",
     )
+    risk_control_mode_values = _parse_str_tuple(
+        args.risk_control_mode,
+        "--risk-control-mode",
+    )
+    soft_exposure_min_values = _parse_float_tuple(
+        args.soft_exposure_min,
+        "--soft-exposure-min",
+    )
 
     segments: list[SegmentParameterSweepRuns] = []
     for config_path in args.configs:
@@ -773,6 +981,8 @@ def sweep_segments_command(args: argparse.Namespace) -> int:
             risk_control_values=risk_control_values,
             market_score_control_values=market_score_control_values,
             market_score_threshold_values=market_score_threshold_values,
+            risk_control_mode_values=risk_control_mode_values,
+            soft_exposure_min_values=soft_exposure_min_values,
         )
         segments.append(
             SegmentParameterSweepRuns(
@@ -987,6 +1197,18 @@ def sweep_command(args: argparse.Namespace) -> int:
         args.market_score_threshold,
         "--market-score-threshold",
     )
+    risk_control_mode_values = _parse_str_tuple(
+        args.risk_control_mode,
+        "--risk-control-mode",
+    )
+    soft_exposure_min_values = _parse_float_tuple(
+        args.soft_exposure_min,
+        "--soft-exposure-min",
+    )
+    state_aware_risk_control_values = _parse_bool_tuple(
+        args.state_aware_risk_control,
+        "--state-aware-risk-control",
+    )
     runs = run_parameter_sweep(
         industry_data,
         benchmark_closes,
@@ -1006,6 +1228,9 @@ def sweep_command(args: argparse.Namespace) -> int:
         risk_control_values=risk_control_values,
         market_score_control_values=market_score_control_values,
         market_score_threshold_values=market_score_threshold_values,
+        risk_control_mode_values=risk_control_mode_values,
+        soft_exposure_min_values=soft_exposure_min_values,
+        state_aware_risk_control_values=state_aware_risk_control_values,
     )
     output_dir = args.output_dir or str(Path(app_config.output_dir) / "parameter_sweep")
     write_parameter_sweep_reports(
@@ -1063,6 +1288,14 @@ def validate_command(args: argparse.Namespace) -> int:
         args.market_score_threshold,
         "--market-score-threshold",
     )
+    risk_control_mode_values = _parse_str_tuple(
+        args.risk_control_mode,
+        "--risk-control-mode",
+    )
+    soft_exposure_min_values = _parse_float_tuple(
+        args.soft_exposure_min,
+        "--soft-exposure-min",
+    )
     if args.walk_forward:
         folds = run_walk_forward_validation(
             industry_data,
@@ -1083,6 +1316,8 @@ def validate_command(args: argparse.Namespace) -> int:
             risk_control_values=risk_control_values,
             market_score_control_values=market_score_control_values,
             market_score_threshold_values=market_score_threshold_values,
+            risk_control_mode_values=risk_control_mode_values,
+            soft_exposure_min_values=soft_exposure_min_values,
             train_window=args.train_window,
             test_window=args.test_window,
             step=args.step,
@@ -1096,7 +1331,7 @@ def validate_command(args: argparse.Namespace) -> int:
         )
 
         selected_runs = [
-            selected_by_train(fold.runs, args.selection_metric) for fold in folds
+            selected_by_train_with_data(fold.runs, args.selection_metric) for fold in folds
         ]
         selection_counts: dict[str, int] = {}
         for selected in selected_runs:
@@ -1158,6 +1393,8 @@ def validate_command(args: argparse.Namespace) -> int:
         risk_control_values=risk_control_values,
         market_score_control_values=market_score_control_values,
         market_score_threshold_values=market_score_threshold_values,
+        risk_control_mode_values=risk_control_mode_values,
+        soft_exposure_min_values=soft_exposure_min_values,
         train_end=train_end,
         test_start=test_start,
         split_ratio=args.split_ratio,
@@ -1169,7 +1406,7 @@ def validate_command(args: argparse.Namespace) -> int:
         selection_metric=args.selection_metric,
     )
 
-    selected = selected_by_train(runs, args.selection_metric)
+    selected = selected_by_train_with_data(runs, args.selection_metric)
     spec = selected.sweep_run.spec
     print(f"Train/test validation complete. Reports written to: {Path(output_dir).resolve()}")
     print(
@@ -1183,6 +1420,135 @@ def validate_command(args: argparse.Namespace) -> int:
     print(f"Test annualized return: {selected.test_metrics['annualized_return']:.2%}")
     print(f"Test max drawdown: {selected.test_metrics['max_drawdown']:.2%}")
     print(f"Test Sharpe ratio: {selected.test_metrics['sharpe_ratio']:.2f}")
+    return 0
+
+
+def validate_segments_command(args: argparse.Namespace) -> int:
+    segment_price_data: list[tuple] = []
+    segment_benchmark_data: list[tuple] = []
+
+    base_strategy = None
+    market_weights = {}
+
+    for config_path in args.configs:
+        app_config = load_config(config_path)
+        industry_data = load_wide_close_csv(app_config.industry_close_path)
+        benchmark_dates, benchmark_closes_raw = (
+            load_benchmark_csv(app_config.benchmark_close_path)
+            if app_config.benchmark_close_path
+            else (None, None)
+        )
+
+        segment_price_data.append((industry_data, Path(config_path).stem))
+        segment_benchmark_data.append(
+            (benchmark_dates, benchmark_closes_raw, Path(config_path).stem)
+        )
+
+        if base_strategy is None:
+            base_strategy = app_config.strategy
+            market_weights = app_config.market_weights
+
+    if base_strategy is None:
+        raise ValueError("At least one config is required")
+
+    strategy = base_strategy
+    if args.industry_only:
+        strategy = replace(
+            strategy,
+            stock_selection=replace(strategy.stock_selection, enabled=False),
+        )
+
+    merged_prices = merge_segment_price_data(segment_price_data, fill_missing=True)
+    merged_benchmark = merge_benchmark_closes(segment_benchmark_data)
+
+    top_k_values = _parse_int_tuple(args.top_k, "--top-k")
+    factor_set_names = _parse_str_tuple(args.factor_set, "--factor-set")
+    risk_off_exposures = _parse_float_tuple(
+        args.risk_off_exposure,
+        "--risk-off-exposure",
+    )
+    risk_control_values = _parse_bool_tuple(args.risk_control, "--risk-control")
+    market_score_control_values = _parse_bool_tuple_or_auto(
+        args.market_score_control,
+        "--market-score-control",
+    )
+    market_score_threshold_values = _parse_float_tuple(
+        args.market_score_threshold,
+        "--market-score-threshold",
+    )
+    risk_control_mode_values = _parse_str_tuple(
+        args.risk_control_mode,
+        "--risk-control-mode",
+    )
+    soft_exposure_min_values = _parse_float_tuple(
+        args.soft_exposure_min,
+        "--soft-exposure-min",
+    )
+
+    folds = run_walk_forward_validation(
+        merged_prices,
+        merged_benchmark,
+        strategy,
+        factor_set_names=factor_set_names,
+        top_k_values=top_k_values,
+        risk_off_exposures=risk_off_exposures,
+        risk_control_values=risk_control_values,
+        market_score_control_values=market_score_control_values,
+        market_score_threshold_values=market_score_threshold_values,
+        risk_control_mode_values=risk_control_mode_values,
+        soft_exposure_min_values=soft_exposure_min_values,
+        market_weights=market_weights,
+        train_window=args.train_window,
+        test_window=args.test_window,
+        step=args.step,
+        include_partial_fold=args.include_partial_fold,
+    )
+
+    write_walk_forward_validation_reports(
+        folds,
+        args.output_dir,
+        selection_metric=args.selection_metric,
+    )
+
+    selected_runs = [
+        selected_by_train_with_data(fold.runs, args.selection_metric) for fold in folds
+    ]
+    selection_counts: dict[str, int] = {}
+    for selected in selected_runs:
+        name = selected.sweep_run.spec.name
+        selection_counts[name] = selection_counts.get(name, 0) + 1
+    most_selected, most_selected_count = sorted(
+        selection_counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    )[0]
+    mean_test_return = sum(
+        run.test_metrics["annualized_return"] for run in selected_runs
+    ) / len(selected_runs)
+    mean_test_drawdown = sum(
+        run.test_metrics["max_drawdown"] for run in selected_runs
+    ) / len(selected_runs)
+    step = args.step if args.step is not None else args.test_window
+    print(
+        "Cross-segment walk-forward validation complete. "
+        f"Reports written to: {Path(args.output_dir).resolve()}"
+    )
+    print(
+        f"Folds: {len(folds)} "
+        f"(train_window={args.train_window}, test_window={args.test_window}, "
+        f"step={step})"
+    )
+    print(
+        "Date range: "
+        f"{folds[0].split.train_start.isoformat()} to "
+        f"{folds[-1].split.test_end.isoformat()}"
+    )
+    print(
+        "Most selected: "
+        f"{most_selected} ({most_selected_count}/{len(folds)} folds)"
+    )
+    print(f"Selection metric: {args.selection_metric}")
+    print(f"Mean test annualized return: {mean_test_return:.2%}")
+    print(f"Mean test max drawdown: {mean_test_drawdown:.2%}")
     return 0
 
 
@@ -1211,6 +1577,7 @@ def fetch_real_data_command(args: argparse.Namespace) -> int:
         market_indices=market_indices,
         progress=print,
         request_interval=args.request_interval,
+        update_mode=args.update_mode,
     )
     print(f"Real data written to: {summary.output_dir.resolve()}")
     print(f"Date range: {summary.start.isoformat()} to {summary.end.isoformat()}")
@@ -1258,11 +1625,6 @@ def fetch_breadth_data_command(args: argparse.Namespace) -> int:
     for window, path in summary.breadth_paths.items():
         print(f"MA{window} breadth: {path.resolve()}")
     print(f"Manifest: {summary.manifest_path.resolve()}")
-    if summary.current_constituents:
-        print(
-            "Note: breadth uses current SW constituents; validate with historical "
-            "constituent snapshots before production use."
-        )
     return 0
 
 
@@ -1297,8 +1659,37 @@ def fetch_stock_data_command(args: argparse.Namespace) -> int:
     if summary.current_constituents:
         print(
             "Note: stock data uses current SW constituents; validate with "
-            "historical constituent snapshots before production use."
+            "historical snapshots for backtest use."
         )
+    return 0
+
+
+def plot_command(args: argparse.Namespace) -> int:
+    report_dir = Path(args.report_dir)
+    equity_path = report_dir / "equity_curve.csv"
+    holding_path = report_dir / "holding_period_return_distribution.csv"
+    annual_path = report_dir / "annual_returns.csv"
+
+    if not equity_path.exists():
+        print(f"Error: equity_curve.csv not found in {report_dir}")
+        return 1
+
+    annual_returns = {}
+    if annual_path.exists():
+        import csv as _csv
+        with annual_path.open("r", encoding="utf-8-sig") as handle:
+            reader = _csv.DictReader(handle)
+            for row in reader:
+                annual_returns[int(row["year"])] = float(row["strategy_return"])
+
+    output_dir = args.output or str(report_dir)
+    html_path = write_html_report(
+        output_dir,
+        equity_path,
+        annual_returns=annual_returns if annual_returns else None,
+        holding_returns_path=holding_path if holding_path.exists() else None,
+    )
+    print(f"HTML report written to: {html_path.resolve()}")
     return 0
 
 
@@ -1325,5 +1716,9 @@ def main(argv: list[str] | None = None) -> int:
         return sweep_command(args)
     if args.command == "validate":
         return validate_command(args)
+    if args.command == "validate-segments":
+        return validate_segments_command(args)
+    if args.command == "plot":
+        return plot_command(args)
     parser.error(f"Unknown command: {args.command}")
     return 2
