@@ -6,18 +6,26 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-from quant_rotation.data import load_benchmark_csv, load_wide_asset_csv, load_wide_close_csv
+from quant_rotation.data import (
+    load_benchmark_csv,
+    load_stock_industry_map_csv,
+    load_wide_asset_csv,
+    load_wide_close_csv,
+)
 from quant_rotation.models import PriceData
 from quant_rotation.real_data import (
     compute_industry_breadth,
     fetch_sw_level1_breadth_data,
+    fetch_sw_level1_stock_data,
     IndexInfo,
     fetch_benchmark_close_data,
     fetch_market_close_data,
     fetch_sw_level1_close_data,
     parse_date,
+    StockMarketData,
     write_breadth_data_files,
     write_real_data_files,
+    write_stock_data_files,
 )
 
 
@@ -212,6 +220,36 @@ class RealDataTests(unittest.TestCase):
         self.assertEqual(breadth[3].closes["IndustryA"], [0.5, 0.5, 0.5])
         self.assertEqual(breadth[3].closes["IndustryB"], [1.0, 1.0, 1.0])
 
+    def test_fetch_sw_level1_stock_data_uses_current_constituents(self) -> None:
+        fake_ak = FakeAk()
+        stock_data = fetch_sw_level1_stock_data(
+            date(2024, 1, 1),
+            date(2024, 1, 5),
+            ak=fake_ak,
+            industries=[
+                IndexInfo("801001", "IndustryA"),
+                IndexInfo("801002", "IndustryB"),
+            ],
+            max_stocks_per_industry=1,
+        )
+
+        self.assertEqual(stock_data.close.assets, ["000001", "000003"])
+        self.assertEqual(
+            stock_data.close.dates,
+            [
+                date(2024, 1, 1),
+                date(2024, 1, 2),
+                date(2024, 1, 3),
+                date(2024, 1, 4),
+                date(2024, 1, 5),
+            ],
+        )
+        self.assertEqual(stock_data.close.closes["000001"], [1.0, 2.0, 3.0, 4.0, 5.0])
+        self.assertEqual(
+            stock_data.industry_map,
+            {"000001": "IndustryA", "000003": "IndustryB"},
+        )
+
     def test_write_breadth_data_files_outputs_loadable_csvs(self) -> None:
         breadth = PriceData(
             dates=[date(2024, 1, 3), date(2024, 1, 4)],
@@ -236,6 +274,47 @@ class RealDataTests(unittest.TestCase):
         self.assertEqual(summary.rows, 2)
         self.assertEqual(loaded.assets, ["IndustryA", "IndustryB"])
         self.assertEqual(loaded.closes["IndustryA"], [0.5, 0.75])
+        self.assertIn("survivor_bias_warning", manifest)
+
+    def test_write_stock_data_files_outputs_loadable_csvs(self) -> None:
+        close = PriceData(
+            dates=[date(2024, 1, 1), date(2024, 1, 2)],
+            closes={
+                "000001": [10.0, 11.0],
+                "000002": [20.0, 19.0],
+            },
+        )
+        amount = PriceData(
+            dates=[date(2024, 1, 1), date(2024, 1, 2)],
+            closes={
+                "000001": [1000.0, 1100.0],
+                "000002": [2000.0, 2100.0],
+            },
+        )
+        stock_data = StockMarketData(
+            close=close,
+            amount=amount,
+            industry_map={"000001": "IndustryA", "000002": "IndustryB"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = write_stock_data_files(Path(tmp), stock_data)
+            loaded_close = load_wide_close_csv(summary.stock_close_path)
+            loaded_amount = load_wide_asset_csv(
+                summary.stock_amount_path or "",
+                value_name="stock amount",
+            )
+            loaded_map = load_stock_industry_map_csv(summary.stock_industry_map_path)
+            manifest = summary.manifest_path.read_text(encoding="utf-8")
+
+        self.assertEqual(summary.rows, 2)
+        self.assertEqual(summary.stocks, 2)
+        self.assertEqual(loaded_close.closes["000001"], [10.0, 11.0])
+        self.assertEqual(loaded_amount.closes["000002"], [2000.0, 2100.0])
+        self.assertEqual(
+            loaded_map.get_map_at(date(2024, 1, 2)),
+            {"000001": "IndustryA", "000002": "IndustryB"},
+        )
         self.assertIn("survivor_bias_warning", manifest)
 
     def test_write_real_data_files_outputs_loadable_csvs(self) -> None:

@@ -313,6 +313,26 @@ python -m quant_rotation fetch-breadth-data `
 This writes `industry_breadth20.csv`, `industry_breadth60.csv`, and
 `breadth_manifest.json`.
 
+The `fetch-stock-data` command prepares phase-5 stock-selection inputs from
+current SW constituents. Use `--max-stocks-per-industry` for a small smoke test
+before fetching the full constituent universe:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m quant_rotation fetch-stock-data `
+  --output data/real `
+  --start 2021-12-13 `
+  --end 2026-06-03 `
+  --adjust qfq `
+  --max-stocks-per-industry 5 `
+  --request-interval 0.2
+```
+
+This writes `stock_close.csv`, `stock_amount.csv` when AKShare returns amount
+or volume fields, `stock_industry_map.csv`, and `stock_manifest.json`. The map
+uses current constituents, so keep it as research data until historical
+constituent snapshots are available.
+
 The CLI writes reports to `reports/` by default:
 
 - `metrics.csv`

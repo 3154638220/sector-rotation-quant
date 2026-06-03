@@ -22,6 +22,7 @@ from .real_data import (
     IndexInfo,
     fetch_and_write_breadth_data,
     fetch_and_write_real_data,
+    fetch_and_write_stock_data,
     parse_date,
 )
 from .reports import write_reports
@@ -137,6 +138,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait between AKShare requests",
     )
     breadth.add_argument(
+        "--industry-indexes",
+        default="",
+        help=(
+            "Optional comma-separated SW industry index list as NAME:CODE. "
+            "Defaults to all detected SW level-1 industries."
+        ),
+    )
+
+    stock = subparsers.add_parser(
+        "fetch-stock-data",
+        help="Fetch current SW constituent A-share stock data",
+    )
+    stock.add_argument("--output", default="data/real", help="Output directory")
+    stock.add_argument(
+        "--start",
+        default="2021-01-01",
+        help="Start date, YYYY-MM-DD or YYYYMMDD",
+    )
+    stock.add_argument(
+        "--end",
+        default=date.today().isoformat(),
+        help="End date, YYYY-MM-DD or YYYYMMDD",
+    )
+    stock.add_argument(
+        "--adjust",
+        default="",
+        help="AKShare stock_zh_a_hist adjustment: empty, qfq, or hfq",
+    )
+    stock.add_argument(
+        "--max-stocks-per-industry",
+        type=int,
+        default=None,
+        help="Optional cap for smoke tests before fetching full constituent sets",
+    )
+    stock.add_argument(
+        "--request-interval",
+        type=float,
+        default=0.0,
+        help="Seconds to wait between AKShare requests",
+    )
+    stock.add_argument(
         "--industry-indexes",
         default="",
         help=(
@@ -896,6 +938,42 @@ def fetch_breadth_data_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def fetch_stock_data_command(args: argparse.Namespace) -> int:
+    start = parse_date(args.start)
+    end = parse_date(args.end)
+    industry_indexes = (
+        _parse_market_index_list(args.industry_indexes)
+        if args.industry_indexes.strip()
+        else None
+    )
+    summary = fetch_and_write_stock_data(
+        args.output,
+        start,
+        end,
+        industries=industry_indexes,
+        adjust=args.adjust,
+        max_stocks_per_industry=args.max_stocks_per_industry,
+        progress=print,
+        request_interval=args.request_interval,
+    )
+    print(f"Stock data written to: {summary.output_dir.resolve()}")
+    print(f"Date range: {summary.start.isoformat()} to {summary.end.isoformat()}")
+    print(f"Rows: {summary.rows}")
+    print(f"Stocks: {summary.stocks}")
+    print(f"Industries: {summary.industries}")
+    print(f"Stock close: {summary.stock_close_path.resolve()}")
+    if summary.stock_amount_path:
+        print(f"Stock amount: {summary.stock_amount_path.resolve()}")
+    print(f"Stock industry map: {summary.stock_industry_map_path.resolve()}")
+    print(f"Manifest: {summary.manifest_path.resolve()}")
+    if summary.current_constituents:
+        print(
+            "Note: stock data uses current SW constituents; validate with "
+            "historical constituent snapshots before production use."
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -905,6 +983,8 @@ def main(argv: list[str] | None = None) -> int:
         return fetch_real_data_command(args)
     if args.command == "fetch-breadth-data":
         return fetch_breadth_data_command(args)
+    if args.command == "fetch-stock-data":
+        return fetch_stock_data_command(args)
     if args.command == "run":
         return run_command(args)
     if args.command == "decompose":

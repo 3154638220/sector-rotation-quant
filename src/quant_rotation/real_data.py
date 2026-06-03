@@ -90,9 +90,31 @@ class BreadthDataSummary:
 
 
 @dataclass(frozen=True)
+class StockDataSummary:
+    output_dir: Path
+    stock_close_path: Path
+    stock_amount_path: Path | None
+    stock_industry_map_path: Path
+    manifest_path: Path
+    start: date
+    end: date
+    rows: int
+    stocks: int
+    industries: int
+    current_constituents: bool = True
+
+
+@dataclass(frozen=True)
 class IndustryMarketData:
     close: PriceData
     amount: PriceData | None
+
+
+@dataclass(frozen=True)
+class StockMarketData:
+    close: PriceData
+    amount: PriceData | None
+    industry_map: dict[str, str]
 
 
 ProgressCallback = Callable[[str], None]
@@ -423,6 +445,167 @@ def fetch_stock_close_data(
     return closes
 
 
+def fetch_stock_daily_data(
+    symbol: str,
+    start: date,
+    end: date,
+    *,
+    ak: Any | None = None,
+    adjust: str = "",
+) -> tuple[dict[date, float], dict[date, float]]:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+
+    ak = ak or _require_akshare()
+    frame = ak.stock_zh_a_hist(
+        symbol=_normalize_stock_code(symbol),
+        period="daily",
+        start_date=compact_date(start),
+        end_date=compact_date(end),
+        adjust=adjust,
+    )
+    closes: dict[date, float] = {}
+    amounts: dict[date, float] = {}
+    for row in _records(frame):
+        day = _cell_date(_cell(row, "日期", "date"))
+        if start <= day <= end:
+            closes[day] = _cell_float(_cell(row, "收盘", "close"))
+            raw_amount = _cell(
+                row,
+                "成交额",
+                "成交金额",
+                "amount",
+                "成交量",
+                "volume",
+                "vol",
+            )
+            if raw_amount is not None:
+                amounts[day] = _cell_float(raw_amount)
+    return closes, amounts
+
+
+def _stock_map_from_constituents(
+    constituents_by_industry: dict[str, list[str]],
+) -> dict[str, str]:
+    stock_to_industry: dict[str, str] = {}
+    for industry, stocks in constituents_by_industry.items():
+        for stock in stocks:
+            previous = stock_to_industry.get(stock)
+            if previous is not None and previous != industry:
+                raise ValueError(
+                    f"Stock {stock} appears in multiple industries: "
+                    f"{previous}, {industry}"
+                )
+            stock_to_industry[stock] = industry
+    if not stock_to_industry:
+        raise ValueError("No stocks found in constituent map")
+    return stock_to_industry
+
+
+def _limit_constituents_per_industry(
+    constituents_by_industry: dict[str, list[str]],
+    max_stocks_per_industry: int | None,
+) -> dict[str, list[str]]:
+    if max_stocks_per_industry is None:
+        return constituents_by_industry
+    if max_stocks_per_industry <= 0:
+        raise ValueError("max_stocks_per_industry must be positive")
+    return {
+        industry: stocks[:max_stocks_per_industry]
+        for industry, stocks in constituents_by_industry.items()
+    }
+
+
+def fetch_sw_level1_stock_data(
+    start: date,
+    end: date,
+    *,
+    ak: Any | None = None,
+    industries: list[IndexInfo] | None = None,
+    adjust: str = "",
+    max_stocks_per_industry: int | None = None,
+    progress: ProgressCallback | None = None,
+    request_interval: float = 0.0,
+) -> StockMarketData:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+
+    ak = ak or _require_akshare()
+    constituents = fetch_sw_level1_constituents(
+        ak=ak,
+        industries=industries,
+        progress=progress,
+        request_interval=request_interval,
+    )
+    constituents = _limit_constituents_per_industry(
+        constituents,
+        max_stocks_per_industry,
+    )
+    stock_industry_map = _stock_map_from_constituents(constituents)
+    all_stocks = sorted(stock_industry_map)
+
+    closes_by_stock: dict[str, dict[date, float]] = {}
+    amounts_by_stock: dict[str, dict[date, float]] = {}
+    for number, stock in enumerate(all_stocks, start=1):
+        if progress:
+            progress(f"Fetching stock {number}/{len(all_stocks)}: {stock}")
+        closes, amounts = fetch_stock_daily_data(
+            stock,
+            start,
+            end,
+            ak=ak,
+            adjust=adjust,
+        )
+        if closes:
+            closes_by_stock[stock] = closes
+            if amounts:
+                amounts_by_stock[stock] = amounts
+        if request_interval > 0 and number < len(all_stocks):
+            time.sleep(request_interval)
+    if not closes_by_stock:
+        raise ValueError("No stock close data returned")
+
+    common_dates = sorted(
+        set.intersection(*(set(values) for values in closes_by_stock.values()))
+    )
+    if not common_dates:
+        raise ValueError("No common trading dates found across stocks")
+
+    amount_data = None
+    if len(amounts_by_stock) == len(closes_by_stock):
+        amount_common_dates = sorted(
+            set(common_dates)
+            & set.intersection(*(set(values) for values in amounts_by_stock.values()))
+        )
+        if amount_common_dates:
+            common_dates = amount_common_dates
+            amount_data = PriceData(
+                dates=common_dates,
+                closes={
+                    stock: [values[day] for day in common_dates]
+                    for stock, values in amounts_by_stock.items()
+                },
+            )
+
+    close_data = PriceData(
+        dates=common_dates,
+        closes={
+            stock: [values[day] for day in common_dates]
+            for stock, values in closes_by_stock.items()
+        },
+    )
+    available_map = {
+        stock: industry
+        for stock, industry in stock_industry_map.items()
+        if stock in close_data.closes
+    }
+    return StockMarketData(
+        close=close_data,
+        amount=amount_data,
+        industry_map=available_map,
+    )
+
+
 def compute_industry_breadth(
     constituents_by_industry: dict[str, list[str]],
     stock_closes: dict[str, dict[date, float]],
@@ -608,6 +791,14 @@ def _write_breadth(path: Path, data: PriceData) -> None:
             )
 
 
+def _write_stock_industry_map(path: Path, stock_industry_map: dict[str, str]) -> None:
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["stock", "industry"])
+        for stock, industry in sorted(stock_industry_map.items()):
+            writer.writerow([stock, industry])
+
+
 def _slice_price_data(data: PriceData, dates: list[date]) -> PriceData:
     position_by_date = {day: index for index, day in enumerate(data.dates)}
     closes = {
@@ -765,6 +956,92 @@ def write_breadth_data_files(
     )
 
 
+def write_stock_data_files(
+    output_dir: str | Path,
+    stock_data: StockMarketData,
+    *,
+    provider: str = "akshare",
+    current_constituents: bool = True,
+) -> StockDataSummary:
+    close_data = stock_data.close
+    amount_data = stock_data.amount
+    if amount_data is not None and amount_data.assets != close_data.assets:
+        raise ValueError("Stock amount data assets must match stock close data assets")
+    if not stock_data.industry_map:
+        raise ValueError("stock industry map must not be empty")
+
+    common_dates = set(close_data.dates)
+    if amount_data is not None:
+        common_dates &= set(amount_data.dates)
+    sorted_dates = sorted(common_dates)
+    if not sorted_dates:
+        raise ValueError("No common dates found across stock data")
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    aligned_close_data = _slice_price_data(close_data, sorted_dates)
+    aligned_amount_data = (
+        _slice_price_data(amount_data, sorted_dates)
+        if amount_data is not None
+        else None
+    )
+    available_map = {
+        stock: industry
+        for stock, industry in stock_data.industry_map.items()
+        if stock in aligned_close_data.closes
+    }
+    if not available_map:
+        raise ValueError("stock industry map has no stocks in stock close data")
+
+    stock_close_path = output_path / "stock_close.csv"
+    stock_amount_path = output_path / "stock_amount.csv" if aligned_amount_data else None
+    stock_industry_map_path = output_path / "stock_industry_map.csv"
+    manifest_path = output_path / "stock_manifest.json"
+
+    _write_industry_close(stock_close_path, aligned_close_data)
+    if aligned_amount_data and stock_amount_path:
+        _write_industry_amount(stock_amount_path, aligned_amount_data)
+    _write_stock_industry_map(stock_industry_map_path, available_map)
+
+    manifest = {
+        "provider": provider,
+        "stock_source": "sw_level1_current_constituents",
+        "current_constituents": current_constituents,
+        "survivor_bias_warning": (
+            "Stock data and stock_industry_map were built from current SW "
+            "constituents. Use historical constituent snapshots before treating "
+            "this as unbiased production research data."
+        ),
+        "start": sorted_dates[0].isoformat(),
+        "end": sorted_dates[-1].isoformat(),
+        "rows": len(sorted_dates),
+        "stocks": len(aligned_close_data.assets),
+        "industries": len(set(available_map.values())),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "files": {
+            "stock_close": stock_close_path.name,
+            "stock_amount": stock_amount_path.name if stock_amount_path else None,
+            "stock_industry_map": stock_industry_map_path.name,
+        },
+    }
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, ensure_ascii=False, indent=2)
+
+    return StockDataSummary(
+        output_dir=output_path,
+        stock_close_path=stock_close_path,
+        stock_amount_path=stock_amount_path,
+        stock_industry_map_path=stock_industry_map_path,
+        manifest_path=manifest_path,
+        start=sorted_dates[0],
+        end=sorted_dates[-1],
+        rows=len(sorted_dates),
+        stocks=len(aligned_close_data.assets),
+        industries=len(set(available_map.values())),
+        current_constituents=current_constituents,
+    )
+
+
 def fetch_and_write_breadth_data(
     output_dir: str | Path,
     start: date,
@@ -796,6 +1073,31 @@ def fetch_and_write_breadth_data(
         breadth_by_window,
         min_stocks=min_stocks,
     )
+
+
+def fetch_and_write_stock_data(
+    output_dir: str | Path,
+    start: date,
+    end: date,
+    *,
+    industries: list[IndexInfo] | None = None,
+    adjust: str = "",
+    max_stocks_per_industry: int | None = None,
+    progress: ProgressCallback | None = None,
+    request_interval: float = 0.0,
+) -> StockDataSummary:
+    ak = _require_akshare()
+    stock_data = fetch_sw_level1_stock_data(
+        start,
+        end,
+        ak=ak,
+        industries=industries,
+        adjust=adjust,
+        max_stocks_per_industry=max_stocks_per_industry,
+        progress=progress,
+        request_interval=request_interval,
+    )
+    return write_stock_data_files(output_dir, stock_data)
 
 
 def fetch_and_write_real_data(
