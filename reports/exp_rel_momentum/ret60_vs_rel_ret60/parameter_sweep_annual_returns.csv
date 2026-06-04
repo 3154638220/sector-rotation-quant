@@ -1,0 +1,13 @@
+rank,name,factor_set,year,annual_return
+1,rel_ret60_ret5_top5_riskoff0,rel_ret60_ret5,2021,0.0000000000
+1,rel_ret60_ret5_top5_riskoff0,rel_ret60_ret5,2022,0.0000000000
+1,rel_ret60_ret5_top5_riskoff0,rel_ret60_ret5,2023,-0.0460502867
+1,rel_ret60_ret5_top5_riskoff0,rel_ret60_ret5,2024,0.0855671140
+1,rel_ret60_ret5_top5_riskoff0,rel_ret60_ret5,2025,0.1862084782
+1,rel_ret60_ret5_top5_riskoff0,rel_ret60_ret5,2026,0.0647373348
+2,ret60_ret5_top5_riskoff0,ret60_ret5,2021,0.0000000000
+2,ret60_ret5_top5_riskoff0,ret60_ret5,2022,0.0000000000
+2,ret60_ret5_top5_riskoff0,ret60_ret5,2023,-0.0460502867
+2,ret60_ret5_top5_riskoff0,ret60_ret5,2024,0.0855671140
+2,ret60_ret5_top5_riskoff0,ret60_ret5,2025,0.1862084782
+2,ret60_ret5_top5_riskoff0,ret60_ret5,2026,0.0647373348

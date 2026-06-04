@@ -27,7 +27,7 @@ class ParameterSweepTests(unittest.TestCase):
         self.assertIn("ret60_ret5_top5_riskoff0p5_riskctrl1_mscore1", names)
         self.assertEqual(
             {spec.factor_set for spec in specs},
-            {"ret60", "ret60_ret5", "ret60_ret120", "ret60_ret120_ret5"},
+            {"ret60", "ret60_ret5", "ret60_ret120", "ret60_ret120_ret5", "rel_ret60_ret5"},
         )
         self.assertEqual({spec.top_k for spec in specs}, {3, 5, 8})
         self.assertEqual({spec.risk_control for spec in specs}, {False, True})

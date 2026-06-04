@@ -29,6 +29,10 @@ class FactorWeights:
     ret20: float = 0.40
     ret60: float = 0.40
     ret120: float = 0.20
+    rel_ret60: float = 0.00
+    rel_ret20: float = 0.00
+    momentum_accel: float = 0.00
+    consistency60: float = 0.00
     amount_strength: float = 0.25
     breadth20: float = 0.12
     breadth60: float = 0.08
@@ -131,6 +135,12 @@ class StrategyConfig:
     bull_exposure: float = 1.00
     sideways_exposure: float = 0.50
     bear_exposure: float = 0.10
+    regime_aware_factors: bool = False
+    bull_factor_weights: FactorWeights = field(default_factory=FactorWeights)
+    sideways_factor_weights: FactorWeights = field(default_factory=FactorWeights)
+    bear_factor_weights: FactorWeights = field(default_factory=FactorWeights)
+    portfolio_mode: str = "equal"
+    softmax_temperature: float = 1.0
     factor_weights: FactorWeights = field(default_factory=FactorWeights)
     stock_selection: StockSelectionConfig = field(default_factory=StockSelectionConfig)
 

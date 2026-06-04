@@ -3,7 +3,13 @@ from __future__ import annotations
 import unittest
 from datetime import date, timedelta
 
-from quant_rotation.factors import compute_factor_snapshot, trailing_mean, zscore
+from quant_rotation.factors import (
+    compute_factor_snapshot,
+    period_return,
+    trailing_mean,
+    trend_consistency,
+    zscore,
+)
 from quant_rotation.models import BreadthData, FactorWeights, PriceData
 
 
@@ -164,6 +170,67 @@ class FactorTests(unittest.TestCase):
                 FactorWeights(valuation=1.0),
                 valuation_data=valuation_data,
             )
+
+    def test_trend_consistency_all_up(self) -> None:
+        values = [float(i) for i in range(61)]
+        result = trend_consistency(values, 60, 60)
+        self.assertEqual(result, 1.0)
+
+    def test_trend_consistency_all_down(self) -> None:
+        values = [float(60 - i) for i in range(61)]
+        result = trend_consistency(values, 60, 60)
+        self.assertEqual(result, 0.0)
+
+    def test_trend_consistency_mixed(self) -> None:
+        values = [1.0, 2.0, 1.0, 2.0, 1.0, 2.0]
+        result = trend_consistency(values, 5, 5)
+        self.assertEqual(result, 0.6)
+
+    def test_period_return_basic(self) -> None:
+        values = [100.0 + i for i in range(50)]
+        ret = period_return(values, 49, 40, 20)
+        expected = values[49 - 20] / values[49 - 40] - 1.0
+        self.assertAlmostEqual(ret, expected)
+
+    def test_rel_ret60_reduces_beta_exposure(self) -> None:
+        dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(130)]
+        high_beta = [100.0 * (1.005**i) for i in range(130)]
+        low_beta = [100.0 * (1.001**i) for i in range(130)]
+        data = PriceData(
+            dates=dates,
+            closes={"high_beta": high_beta, "low_beta": low_beta},
+        )
+        market = PriceData(
+            dates=dates,
+            closes={"CSI300": [100.0 * (1.003**i) for i in range(130)]},
+        )
+        market_weights = {"CSI300": 1.0}
+
+        snapshot_rel = compute_factor_snapshot(
+            data,
+            129,
+            FactorWeights(rel_ret60=1.0),
+            market_data=market,
+            market_weights=market_weights,
+        )
+
+        self.assertIn("rel_ret60", snapshot_rel.fields)
+
+    def test_consistency60_factor_increases_with_up_trend(self) -> None:
+        dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(130)]
+        trending_up = [100.0 * (1.004**i) for i in range(130)]
+        trending_down = [100.0 * (1.004**(130 - i)) for i in range(130)]
+        data = PriceData(
+            dates=dates,
+            closes={"up": trending_up, "down": trending_down},
+        )
+        snapshot = compute_factor_snapshot(
+            data,
+            129,
+            FactorWeights(consistency60=1.0),
+        )
+        self.assertGreater(snapshot.scores["up"], snapshot.scores["down"])
+        self.assertIn("consistency60", snapshot.fields)
 
 
 if __name__ == "__main__":

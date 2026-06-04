@@ -1,0 +1,5 @@
+rank_by_oos_final_equity,name,factor_set,enabled_factors,top_k,risk_off_exposure,risk_control,market_score_control,market_score_threshold,folds,first_test_start,last_test_end,oos_final_equity,equal_weight_final_equity,oos_excess_vs_equal_weight,benchmark_final_equity,oos_excess_vs_benchmark
+1,ret60_ret5_top5_riskoff0_riskctrl1_mscore0,ret60_ret5,ret60;ret5,5,0.000000,true,false,0.000000,27,2012-02-06,2026-03-05,1.8287604194,2.4637303664,-0.2577270450,1.7303402141,0.0568791065
+2,ret60_ret5_top5_riskoff0_riskctrl1_mscore1,ret60_ret5,ret60;ret5,5,0.000000,true,true,0.000000,27,2012-02-06,2026-03-05,1.7492072208,2.4637303664,-0.2900167792,1.7303402141,0.0109036400
+3,rel_ret60_ret5_top5_riskoff0_riskctrl1_mscore0,rel_ret60_ret5,rel_ret60;ret5,5,0.000000,true,false,0.000000,27,2012-02-06,2026-03-05,1.4210016011,2.4637303664,-0.4232316894,1.7303402141,-0.1787732901
+4,rel_ret60_ret5_top5_riskoff0_riskctrl1_mscore1,rel_ret60_ret5,rel_ret60;ret5,5,0.000000,true,true,0.000000,27,2012-02-06,2026-03-05,1.3831638797,2.4637303664,-0.4385895881,1.7303402141,-0.2006405050

@@ -2,6 +2,7 @@
 industry_close = "../data/real_sw2000/industry_close.csv"
 industry_amount = "../data/real_sw2000/industry_amount.csv"
 benchmark_close = "../data/real_sw2000/benchmark_close.csv"
+# sw2000 has no market_close or prosperity data
 
 [strategy]
 rebalance_every = 20
@@ -14,11 +15,16 @@ market_score_control = true
 market_score_window = 60
 market_score_threshold = 0.0
 risk_off_exposure = 0.00
+portfolio_mode = "equal"
 
 [factors]
 ret20_weight = 0.00
 ret60_weight = 1.00
 ret120_weight = 0.00
+rel_ret60_weight = 0.00
+rel_ret20_weight = 0.00
+momentum_accel_weight = 0.00
+consistency60_weight = 0.00
 amount_strength_weight = 0.00
 breadth20_weight = 0.00
 breadth60_weight = 0.00

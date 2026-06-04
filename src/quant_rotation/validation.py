@@ -405,6 +405,8 @@ def run_train_test_validation(
     market_score_threshold_values: tuple[float, ...] = DEFAULT_MARKET_SCORE_THRESHOLDS,
     risk_control_mode_values: tuple[str, ...] = DEFAULT_RISK_CONTROL_MODE_VALUES,
     soft_exposure_min_values: tuple[float, ...] = DEFAULT_SOFT_EXPOSURE_MIN_VALUES,
+    portfolio_mode_values: tuple[str, ...] = ("equal",),
+    softmax_temperature_values: tuple[float, ...] = (1.0,),
     train_end: date | None = None,
     test_start: date | None = None,
     split_ratio: float = 0.70,
@@ -436,6 +438,8 @@ def run_train_test_validation(
         market_score_threshold_values=market_score_threshold_values,
         risk_control_mode_values=risk_control_mode_values,
         soft_exposure_min_values=soft_exposure_min_values,
+        portfolio_mode_values=portfolio_mode_values,
+        softmax_temperature_values=softmax_temperature_values,
     )
     return _validation_runs_for_split(sweep_runs, split)
 
@@ -493,6 +497,8 @@ def run_walk_forward_validation(
     market_score_threshold_values: tuple[float, ...] = DEFAULT_MARKET_SCORE_THRESHOLDS,
     risk_control_mode_values: tuple[str, ...] = DEFAULT_RISK_CONTROL_MODE_VALUES,
     soft_exposure_min_values: tuple[float, ...] = DEFAULT_SOFT_EXPOSURE_MIN_VALUES,
+    portfolio_mode_values: tuple[str, ...] = ("equal",),
+    softmax_temperature_values: tuple[float, ...] = (1.0,),
     train_window: int = 504,
     test_window: int = 126,
     step: int | None = None,
@@ -526,6 +532,8 @@ def run_walk_forward_validation(
         market_score_threshold_values=market_score_threshold_values,
         risk_control_mode_values=risk_control_mode_values,
         soft_exposure_min_values=soft_exposure_min_values,
+        portfolio_mode_values=portfolio_mode_values,
+        softmax_temperature_values=softmax_temperature_values,
     )
 
     return [

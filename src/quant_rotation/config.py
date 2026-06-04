@@ -15,6 +15,44 @@ def _resolve_path(base_dir: Path, value: str | None) -> str | None:
     return str((base_dir / path).resolve())
 
 
+def _parse_factor_weights(section: dict) -> FactorWeights:
+    return FactorWeights(
+        ret20=float(section.get("ret20_weight", 0.40)),
+        ret60=float(section.get("ret60_weight", 0.40)),
+        ret120=float(section.get("ret120_weight", 0.20)),
+        rel_ret60=float(section.get("rel_ret60_weight", 0.00)),
+        rel_ret20=float(section.get("rel_ret20_weight", 0.00)),
+        momentum_accel=float(section.get("momentum_accel_weight", 0.00)),
+        consistency60=float(section.get("consistency60_weight", 0.00)),
+        amount_strength=float(section.get("amount_strength_weight", 0.25)),
+        breadth20=float(section.get("breadth20_weight", 0.12)),
+        breadth60=float(section.get("breadth60_weight", 0.08)),
+        valuation=float(section.get("valuation_weight", 0.00)),
+        prosperity=float(section.get("prosperity_weight", 0.00)),
+        vol20=float(section.get("vol20_weight", -0.30)),
+        ret5=float(section.get("ret5_weight", -0.20)),
+    )
+
+
+def _parse_regime_factors(section: dict) -> FactorWeights:
+    return FactorWeights(
+        ret20=float(section.get("ret20_weight", 0.00)),
+        ret60=float(section.get("ret60_weight", 0.00)),
+        ret120=float(section.get("ret120_weight", 0.00)),
+        rel_ret60=float(section.get("rel_ret60_weight", 0.00)),
+        rel_ret20=float(section.get("rel_ret20_weight", 0.00)),
+        momentum_accel=float(section.get("momentum_accel_weight", 0.00)),
+        consistency60=float(section.get("consistency60_weight", 0.00)),
+        amount_strength=float(section.get("amount_strength_weight", 0.00)),
+        breadth20=float(section.get("breadth20_weight", 0.00)),
+        breadth60=float(section.get("breadth60_weight", 0.00)),
+        valuation=float(section.get("valuation_weight", 0.00)),
+        prosperity=float(section.get("prosperity_weight", 0.00)),
+        vol20=float(section.get("vol20_weight", 0.00)),
+        ret5=float(section.get("ret5_weight", 0.00)),
+    )
+
+
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path)
     with config_path.open("rb") as handle:
@@ -29,18 +67,7 @@ def load_config(path: str | Path) -> AppConfig:
         str(key): float(value) for key, value in raw.get("market_weights", {}).items()
     }
 
-    factor_weights = FactorWeights(
-        ret20=float(factors.get("ret20_weight", 0.40)),
-        ret60=float(factors.get("ret60_weight", 0.40)),
-        ret120=float(factors.get("ret120_weight", 0.20)),
-        amount_strength=float(factors.get("amount_strength_weight", 0.25)),
-        breadth20=float(factors.get("breadth20_weight", 0.12)),
-        breadth60=float(factors.get("breadth60_weight", 0.08)),
-        valuation=float(factors.get("valuation_weight", 0.00)),
-        prosperity=float(factors.get("prosperity_weight", 0.00)),
-        vol20=float(factors.get("vol20_weight", -0.30)),
-        ret5=float(factors.get("ret5_weight", -0.20)),
-    )
+    factor_weights = _parse_factor_weights(factors)
     stock_selection = StockSelectionConfig(
         enabled=bool(strategy.get("stock_selection", False)),
         top_n_per_industry=int(strategy.get("stock_top_n_per_industry", 5)),
@@ -72,6 +99,12 @@ def load_config(path: str | Path) -> AppConfig:
         bull_exposure=float(strategy.get("bull_exposure", 1.00)),
         sideways_exposure=float(strategy.get("sideways_exposure", 0.50)),
         bear_exposure=float(strategy.get("bear_exposure", 0.10)),
+        regime_aware_factors=bool(strategy.get("regime_aware_factors", False)),
+        bull_factor_weights=_parse_regime_factors(strategy.get("bull_factors", {})),
+        sideways_factor_weights=_parse_regime_factors(strategy.get("sideways_factors", {})),
+        bear_factor_weights=_parse_regime_factors(strategy.get("bear_factors", {})),
+        portfolio_mode=str(strategy.get("portfolio_mode", "equal")),
+        softmax_temperature=float(strategy.get("softmax_temperature", 1.0)),
         factor_weights=factor_weights,
         stock_selection=stock_selection,
     )

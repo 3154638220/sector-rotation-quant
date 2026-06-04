@@ -48,6 +48,7 @@ from .sweep import (
     DEFAULT_RISK_OFF_EXPOSURES,
     DEFAULT_RISK_CONTROL_MODE_VALUES,
     DEFAULT_SOFT_EXPOSURE_MIN_VALUES,
+    DEFAULT_SOFTMAX_TEMPERATURES,
     DEFAULT_TOP_K_VALUES,
 )
 from .validation import (
@@ -440,6 +441,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated state_aware_risk_control values, e.g. false,true",
     )
     sweep.add_argument(
+        "--portfolio-mode",
+        default="equal",
+        help="Comma-separated portfolio_mode values, e.g. equal,softmax,vol_parity",
+    )
+    sweep.add_argument(
+        "--softmax-temperature",
+        default="1.0",
+        help="Comma-separated softmax_temperature values, e.g. 0.5,0.75,1.0,1.5,2.0",
+    )
+    sweep.add_argument(
         "--top-n-equity",
         type=int,
         default=10,
@@ -568,6 +579,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include a final shorter test fold when enough observations remain",
     )
+    validate.add_argument(
+        "--portfolio-mode",
+        default="equal",
+        help="Comma-separated portfolio_mode values, e.g. equal,softmax,vol_parity",
+    )
+    validate.add_argument(
+        "--softmax-temperature",
+        default="1.0",
+        help="Comma-separated softmax_temperature values, e.g. 0.5,0.75,1.0,1.5,2.0",
+    )
     validate_segments = subparsers.add_parser(
         "validate-segments",
         help="Run walk-forward validation over merged segment data",
@@ -675,6 +696,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-partial-fold",
         action="store_true",
         help="Include a final shorter test fold when enough observations remain",
+    )
+    validate_segments.add_argument(
+        "--portfolio-mode",
+        default="equal",
+        help="Comma-separated portfolio_mode values, e.g. equal,softmax,vol_parity",
+    )
+    validate_segments.add_argument(
+        "--softmax-temperature",
+        default="1.0",
+        help="Comma-separated softmax_temperature values, e.g. 0.5,0.75,1.0,1.5,2.0",
     )
 
     plot_cmd = subparsers.add_parser(
@@ -1258,6 +1289,14 @@ def sweep_command(args: argparse.Namespace) -> int:
         args.state_aware_risk_control,
         "--state-aware-risk-control",
     )
+    portfolio_mode_values = _parse_str_tuple(
+        args.portfolio_mode,
+        "--portfolio-mode",
+    )
+    softmax_temperature_values = _parse_float_tuple(
+        args.softmax_temperature,
+        "--softmax-temperature",
+    )
     runs = run_parameter_sweep(
         industry_data,
         benchmark_closes,
@@ -1280,6 +1319,8 @@ def sweep_command(args: argparse.Namespace) -> int:
         risk_control_mode_values=risk_control_mode_values,
         soft_exposure_min_values=soft_exposure_min_values,
         state_aware_risk_control_values=state_aware_risk_control_values,
+        portfolio_mode_values=portfolio_mode_values,
+        softmax_temperature_values=softmax_temperature_values,
     )
     output_dir = args.output_dir or str(Path(app_config.output_dir) / "parameter_sweep")
     write_parameter_sweep_reports(
@@ -1345,6 +1386,14 @@ def validate_command(args: argparse.Namespace) -> int:
         args.soft_exposure_min,
         "--soft-exposure-min",
     )
+    portfolio_mode_values = _parse_str_tuple(
+        args.portfolio_mode,
+        "--portfolio-mode",
+    )
+    softmax_temperature_values = _parse_float_tuple(
+        args.softmax_temperature,
+        "--softmax-temperature",
+    )
     if args.walk_forward:
         folds = run_walk_forward_validation(
             industry_data,
@@ -1367,6 +1416,8 @@ def validate_command(args: argparse.Namespace) -> int:
             market_score_threshold_values=market_score_threshold_values,
             risk_control_mode_values=risk_control_mode_values,
             soft_exposure_min_values=soft_exposure_min_values,
+            portfolio_mode_values=portfolio_mode_values,
+            softmax_temperature_values=softmax_temperature_values,
             train_window=args.train_window,
             test_window=args.test_window,
             step=args.step,
@@ -1444,6 +1495,8 @@ def validate_command(args: argparse.Namespace) -> int:
         market_score_threshold_values=market_score_threshold_values,
         risk_control_mode_values=risk_control_mode_values,
         soft_exposure_min_values=soft_exposure_min_values,
+        portfolio_mode_values=portfolio_mode_values,
+        softmax_temperature_values=softmax_temperature_values,
         train_end=train_end,
         test_start=test_start,
         split_ratio=args.split_ratio,
@@ -1533,6 +1586,14 @@ def validate_segments_command(args: argparse.Namespace) -> int:
         args.soft_exposure_min,
         "--soft-exposure-min",
     )
+    portfolio_mode_values = _parse_str_tuple(
+        args.portfolio_mode,
+        "--portfolio-mode",
+    )
+    softmax_temperature_values = _parse_float_tuple(
+        args.softmax_temperature,
+        "--softmax-temperature",
+    )
 
     folds = run_walk_forward_validation(
         merged_prices,
@@ -1546,6 +1607,8 @@ def validate_segments_command(args: argparse.Namespace) -> int:
         market_score_threshold_values=market_score_threshold_values,
         risk_control_mode_values=risk_control_mode_values,
         soft_exposure_min_values=soft_exposure_min_values,
+        portfolio_mode_values=portfolio_mode_values,
+        softmax_temperature_values=softmax_temperature_values,
         market_weights=market_weights,
         train_window=args.train_window,
         test_window=args.test_window,

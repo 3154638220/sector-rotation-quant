@@ -2,18 +2,47 @@ from __future__ import annotations
 
 import math
 
-from .factors import compute_factor_snapshot, simple_return
+from .factors import compute_factor_snapshot, simple_return, trailing_volatility
 from .metrics import annual_returns, summarize_performance
 from .models import (
     BacktestResult,
     BreadthData,
+    FactorWeights,
     PriceData,
     RebalanceEvent,
     StockIndustryMap,
     StrategyConfig,
 )
-from .portfolio import equal_weight_target, turnover
+from .portfolio import equal_weight_target, softmax_weight_target, turnover, vol_parity_target
 from .stock_selection import stock_target_weights
+
+
+def _classify_regime_for_factors(
+    benchmark_closes: list[float] | None,
+    signal_index: int,
+    ma_window: int,
+    market_score: float | None = None,
+) -> str:
+    if benchmark_closes is None or signal_index < ma_window:
+        return "sideways"
+
+    ma_val = sum(benchmark_closes[signal_index - ma_window + 1 : signal_index + 1]) / ma_window
+    current = benchmark_closes[signal_index]
+    trend_up = current > ma_val
+
+    if trend_up and (market_score is None or market_score > 0):
+        return "bull"
+    elif not trend_up:
+        return "bear"
+    return "sideways"
+
+
+def _select_regime_weights(config: StrategyConfig, regime: str) -> FactorWeights:
+    if regime == "bull":
+        return config.bull_factor_weights
+    elif regime == "bear":
+        return config.bear_factor_weights
+    return config.sideways_factor_weights
 
 
 def soft_risk_exposure(
@@ -32,19 +61,20 @@ def classify_market_state(
     benchmark_closes: list[float] | None,
     signal_index: int,
     ma_window: int,
+    vol_hist: list[float] | None = None,
 ) -> str:
-    if benchmark_closes is not None and signal_index >= ma_window:
-        moving_average = sum(
-            benchmark_closes[signal_index - ma_window + 1 : signal_index + 1]
-        ) / ma_window
-        trend_strength = (
-            benchmark_closes[signal_index] / moving_average - 1.0
-        )
+    if benchmark_closes is not None and signal_index >= 60:
+        ma20 = sum(benchmark_closes[signal_index - 19 : signal_index + 1]) / 20.0
+        ma60 = sum(benchmark_closes[signal_index - 59 : signal_index + 1]) / 60.0
+        trend_up = ma20 > ma60
+        trend_strength = ma20 / ma60 - 1.0
     else:
+        trend_up = False
         trend_strength = 0.0
-    if market_score > 0.05 and trend_strength > 0.03:
+
+    if market_score > 0.03 and trend_up:
         return "bull"
-    elif market_score < -0.03:
+    elif market_score < -0.03 or (trend_strength < -0.05 and not trend_up):
         return "bear"
     return "sideways"
 
@@ -59,7 +89,10 @@ def _state_aware_exposure(
     sideways_exposure: float = 0.5,
     bear_exposure: float = 0.1,
 ) -> float:
-    state = classify_market_state(market_score, benchmark_closes, signal_index, ma_window)
+    state = classify_market_state(
+        market_score, benchmark_closes, signal_index, ma_window,
+        vol_hist=benchmark_closes,
+    )
     if state == "bull":
         return bull_exposure
     elif state == "bear":
@@ -259,15 +292,6 @@ def run_backtest(
 
         signal_index = rebalance_by_execution_index.get(index)
         if signal_index is not None:
-            snapshot = compute_factor_snapshot(
-                data,
-                signal_index,
-                config.factor_weights,
-                amount_data=amount_data,
-                breadth_data=breadth_data,
-                valuation_data=valuation_data,
-                prosperity_data=prosperity_data,
-            )
             trend_ok = (
                 _market_trend(benchmark_closes, signal_index, config.market_ma_window)
                 if config.risk_control
@@ -283,6 +307,25 @@ def run_backtest(
                 )
                 if config.market_score_control
                 else None
+            )
+            if config.regime_aware_factors:
+                regime = _classify_regime_for_factors(
+                    benchmark_closes, signal_index,
+                    config.market_ma_window, score,
+                )
+                active_weights = _select_regime_weights(config, regime)
+            else:
+                active_weights = config.factor_weights
+            snapshot = compute_factor_snapshot(
+                data,
+                signal_index,
+                active_weights,
+                amount_data=amount_data,
+                breadth_data=breadth_data,
+                valuation_data=valuation_data,
+                prosperity_data=prosperity_data,
+                market_data=market_data,
+                market_weights=market_weights,
             )
             score_ok = score is None or score >= config.market_score_threshold
             risk_on = trend_ok and score_ok
@@ -317,16 +360,35 @@ def run_backtest(
                     sideways_exposure=config.sideways_exposure,
                     bear_exposure=config.bear_exposure,
                 )
-                if not trend_ok:
-                    exposure = min(exposure, config.bear_exposure)
             else:
                 exposure = 1.0 if risk_on else config.risk_off_exposure
-            industry_target_weights = equal_weight_target(
-                snapshot.scores,
-                top_k=config.top_k,
-                exposure=exposure,
-                max_weight=config.max_industry_weight,
-            )
+            if config.portfolio_mode == "softmax":
+                industry_target_weights = softmax_weight_target(
+                    snapshot.scores,
+                    top_k=config.top_k,
+                    exposure=exposure,
+                    max_weight=config.max_industry_weight,
+                    temperature=config.softmax_temperature,
+                )
+            elif config.portfolio_mode == "vol_parity":
+                vol_snapshot = {
+                    asset: trailing_volatility(closes, signal_index, 20)
+                    for asset, closes in data.closes.items()
+                }
+                industry_target_weights = vol_parity_target(
+                    snapshot.scores,
+                    vol_snapshot,
+                    top_k=config.top_k,
+                    exposure=exposure,
+                    max_weight=config.max_industry_weight,
+                )
+            else:
+                industry_target_weights = equal_weight_target(
+                    snapshot.scores,
+                    top_k=config.top_k,
+                    exposure=exposure,
+                    max_weight=config.max_industry_weight,
+                )
             target_weights = (
                 stock_target_weights(
                     industry_target_weights,

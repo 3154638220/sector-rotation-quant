@@ -21,6 +21,7 @@ DEFAULT_FACTOR_SET_NAMES = (
     "ret60_ret5",
     "ret60_ret120",
     "ret60_ret120_ret5",
+    "rel_ret60_ret5",
 )
 DEFAULT_TOP_K_VALUES = (3, 5, 8)
 DEFAULT_RISK_OFF_EXPOSURES = (0.0, 0.2, 0.3, 0.5)
@@ -30,6 +31,7 @@ DEFAULT_MARKET_SCORE_THRESHOLDS = (0.0,)
 DEFAULT_RISK_CONTROL_MODE_VALUES = ("hard",)
 DEFAULT_SOFT_EXPOSURE_MIN_VALUES = (0.1, 0.2, 0.3)
 DEFAULT_STATE_AWARE_RISK_CONTROL_VALUES = (False,)
+DEFAULT_SOFTMAX_TEMPERATURES = (0.5, 0.75, 1.0, 1.5, 2.0)
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,8 @@ class ParameterSweepSpec:
     soft_exposure_center: float = 0.00
     soft_exposure_steepness: float = 20.0
     state_aware_risk_control: bool = False
+    portfolio_mode: str = "equal"
+    softmax_temperature: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -225,6 +229,21 @@ def _candidate_factor_sets(
             "20/60/120-day industry momentum",
             {"ret20": 1.0, "ret60": 1.0, "ret120": 0.5},
         ),
+        (
+            "rel_ret60_ret5",
+            "60-day market-excess momentum with 5-day overheating penalty",
+            {"rel_ret60": 1.0, "ret5": -0.5},
+        ),
+        (
+            "rel_ret60_ret5_prosperity",
+            "market-excess momentum, reversal, and prosperity",
+            {"rel_ret60": 1.0, "ret5": -0.5, "prosperity": 0.20},
+        ),
+        (
+            "rel_ret60_consistency",
+            "market-excess momentum with trend consistency quality",
+            {"rel_ret60": 1.0, "consistency60": 0.30, "ret5": -0.5},
+        ),
     ]
     for name, description, values in raw_candidates:
         fields = _active_fields(
@@ -265,6 +284,8 @@ def build_parameter_sweep_specs(
     risk_control_mode_values: tuple[str, ...] = DEFAULT_RISK_CONTROL_MODE_VALUES,
     soft_exposure_min_values: tuple[float, ...] = DEFAULT_SOFT_EXPOSURE_MIN_VALUES,
     state_aware_risk_control_values: tuple[bool, ...] = DEFAULT_STATE_AWARE_RISK_CONTROL_VALUES,
+    portfolio_mode_values: tuple[str, ...] = ("equal",),
+    softmax_temperature_values: tuple[float, ...] = (1.0,),
 ) -> list[ParameterSweepSpec]:
     if not factor_set_names:
         raise ValueError("Parameter sweep requires at least one factor_set value")
@@ -319,78 +340,96 @@ def build_parameter_sweep_specs(
         len(market_score_threshold_values) > 1
         or market_score_threshold_values[0] != config.market_score_threshold
     )
+    include_portfolio_suffix = len(portfolio_mode_values) > 1
+    include_temp_suffix = len(softmax_temperature_values) > 1
 
     specs: list[ParameterSweepSpec] = []
     for factor_set, description, fields, weights in candidate_sets:
         if factor_set not in requested_names:
             continue
-        for top_k in top_k_values:
-            for risk_control_mode in risk_control_mode_values:
-                if risk_control_mode == "soft":
-                    exposure_iter = soft_exposure_min_values
-                    mode_label = "softoff"
-                else:
-                    exposure_iter = risk_off_exposures
-                    mode_label = "riskoff"
-                for exp_val in exposure_iter:
-                    for risk_control in risk_control_values:
-                        for market_score_control in market_score_control_values:
-                            thresholds = (
-                                market_score_threshold_values
-                                if market_score_control
-                                else (config.market_score_threshold,)
-                            )
-                            for threshold in thresholds:
-                                name = (
-                                    f"{factor_set}_top{top_k}_"
-                                    f"{mode_label}"
-                                    f"{_format_exposure(exp_val)}"
-                                )
-                                if include_mode_suffix:
-                                    name = f"{name}_mode{risk_control_mode[:1]}"
-                                if include_control_suffix:
-                                    name = (
-                                        f"{name}"
-                                        f"_riskctrl{_format_bool(risk_control)}"
-                                        f"_mscore{_format_bool(market_score_control)}"
+        for portfolio_mode in portfolio_mode_values:
+            temp_iter = (
+                softmax_temperature_values
+                if portfolio_mode == "softmax"
+                else (config.softmax_temperature,)
+            )
+            for temperature in temp_iter:
+                for top_k in top_k_values:
+                    for risk_control_mode in risk_control_mode_values:
+                        if risk_control_mode == "soft":
+                            exposure_iter = soft_exposure_min_values
+                            mode_label = "softoff"
+                        else:
+                            exposure_iter = risk_off_exposures
+                            mode_label = "riskoff"
+                        for exp_val in exposure_iter:
+                            for risk_control in risk_control_values:
+                                for market_score_control in market_score_control_values:
+                                    thresholds = (
+                                        market_score_threshold_values
+                                        if market_score_control
+                                        else (config.market_score_threshold,)
                                     )
-                                if market_score_control and include_threshold_suffix:
-                                    name = (
-                                        f"{name}_mthr"
-                                        f"{_format_threshold(threshold)}"
-                                    )
-                                if risk_control_mode == "soft":
-                                    spec = ParameterSweepSpec(
-                                        name=name,
-                                        factor_set=factor_set,
-                                        description=description,
-                                        factors=fields,
-                                        factor_weights=weights,
-                                        top_k=top_k,
-                                        risk_off_exposure=0.0,
-                                        risk_control=risk_control,
-                                        market_score_control=market_score_control,
-                                        market_score_threshold=threshold,
-                                        risk_control_mode="soft",
-                                        soft_exposure_min=exp_val,
-                                        soft_exposure_max=config.soft_exposure_max,
-                                        soft_exposure_center=config.soft_exposure_center,
-                                        soft_exposure_steepness=config.soft_exposure_steepness,
-                                    )
-                                else:
-                                    spec = ParameterSweepSpec(
-                                        name=name,
-                                        factor_set=factor_set,
-                                        description=description,
-                                        factors=fields,
-                                        factor_weights=weights,
-                                        top_k=top_k,
-                                        risk_off_exposure=exp_val,
-                                        risk_control=risk_control,
-                                        market_score_control=market_score_control,
-                                        market_score_threshold=threshold,
-                                    )
-                                specs.append(spec)
+                                    for threshold in thresholds:
+                                        name = (
+                                            f"{factor_set}_top{top_k}_"
+                                            f"{mode_label}"
+                                            f"{_format_exposure(exp_val)}"
+                                        )
+                                        if include_portfolio_suffix:
+                                            name = f"{name}_pm{portfolio_mode}"
+                                        if include_temp_suffix:
+                                            t_str = f"{temperature:g}".replace(".", "p")
+                                            name = f"{name}_t{t_str}"
+                                        if include_mode_suffix:
+                                            name = f"{name}_mode{risk_control_mode[:1]}"
+                                        if include_control_suffix:
+                                            name = (
+                                                f"{name}"
+                                                f"_riskctrl{_format_bool(risk_control)}"
+                                                f"_mscore{_format_bool(market_score_control)}"
+                                            )
+                                        if market_score_control and include_threshold_suffix:
+                                            name = (
+                                                f"{name}_mthr"
+                                                f"{_format_threshold(threshold)}"
+                                            )
+                                        if risk_control_mode == "soft":
+                                            spec = ParameterSweepSpec(
+                                                name=name,
+                                                factor_set=factor_set,
+                                                description=description,
+                                                factors=fields,
+                                                factor_weights=weights,
+                                                top_k=top_k,
+                                                risk_off_exposure=0.0,
+                                                risk_control=risk_control,
+                                                market_score_control=market_score_control,
+                                                market_score_threshold=threshold,
+                                                risk_control_mode="soft",
+                                                soft_exposure_min=exp_val,
+                                                soft_exposure_max=config.soft_exposure_max,
+                                                soft_exposure_center=config.soft_exposure_center,
+                                                soft_exposure_steepness=config.soft_exposure_steepness,
+                                                portfolio_mode=portfolio_mode,
+                                                softmax_temperature=temperature,
+                                            )
+                                        else:
+                                            spec = ParameterSweepSpec(
+                                                name=name,
+                                                factor_set=factor_set,
+                                                description=description,
+                                                factors=fields,
+                                                factor_weights=weights,
+                                                top_k=top_k,
+                                                risk_off_exposure=exp_val,
+                                                risk_control=risk_control,
+                                                market_score_control=market_score_control,
+                                                market_score_threshold=threshold,
+                                                portfolio_mode=portfolio_mode,
+                                                softmax_temperature=temperature,
+                                            )
+                                        specs.append(spec)
     if not specs:
         raise ValueError("No parameter sweep candidates were generated")
 
@@ -399,39 +438,53 @@ def build_parameter_sweep_specs(
         for factor_set, description, fields, weights in candidate_sets:
             if factor_set not in requested_names:
                 continue
-            for top_k in top_k_values:
-                for risk_control in risk_control_values:
-                    for market_score_control in market_score_control_values:
-                        if not risk_control or not market_score_control:
-                            continue
-                        for threshold in (
-                            market_score_threshold_values
-                            if market_score_control
-                            else (config.market_score_threshold,)
-                        ):
-                            name = f"{factor_set}_top{top_k}_stateaware"
-                            if include_control_suffix:
-                                name = (
-                                    f"{name}"
-                                    f"_riskctrl{_format_bool(risk_control)}"
-                                    f"_mscore{_format_bool(market_score_control)}"
-                                )
-                            if include_threshold_suffix:
-                                name = f"{name}_mthr{_format_threshold(threshold)}"
-                            spec = ParameterSweepSpec(
-                                name=name,
-                                factor_set=factor_set,
-                                description=f"{description} (state-aware risk control)",
-                                factors=fields,
-                                factor_weights=weights,
-                                top_k=top_k,
-                                risk_off_exposure=0.0,
-                                risk_control=risk_control,
-                                market_score_control=market_score_control,
-                                market_score_threshold=threshold,
-                                state_aware_risk_control=True,
-                            )
-                            state_aware_specs.append(spec)
+            for portfolio_mode in portfolio_mode_values:
+                temp_iter = (
+                    softmax_temperature_values
+                    if portfolio_mode == "softmax"
+                    else (config.softmax_temperature,)
+                )
+                for temperature in temp_iter:
+                    for top_k in top_k_values:
+                        for risk_control in risk_control_values:
+                            for market_score_control in market_score_control_values:
+                                if not risk_control or not market_score_control:
+                                    continue
+                                for threshold in (
+                                    market_score_threshold_values
+                                    if market_score_control
+                                    else (config.market_score_threshold,)
+                                ):
+                                    name = f"{factor_set}_top{top_k}_stateaware"
+                                    if include_portfolio_suffix:
+                                        name = f"{name}_pm{portfolio_mode}"
+                                    if include_temp_suffix:
+                                        t_str = f"{temperature:g}".replace(".", "p")
+                                        name = f"{name}_t{t_str}"
+                                    if include_control_suffix:
+                                        name = (
+                                            f"{name}"
+                                            f"_riskctrl{_format_bool(risk_control)}"
+                                            f"_mscore{_format_bool(market_score_control)}"
+                                        )
+                                    if include_threshold_suffix:
+                                        name = f"{name}_mthr{_format_threshold(threshold)}"
+                                    spec = ParameterSweepSpec(
+                                        name=name,
+                                        factor_set=factor_set,
+                                        description=f"{description} (state-aware risk control)",
+                                        factors=fields,
+                                        factor_weights=weights,
+                                        top_k=top_k,
+                                        risk_off_exposure=0.0,
+                                        risk_control=risk_control,
+                                        market_score_control=market_score_control,
+                                        market_score_threshold=threshold,
+                                        state_aware_risk_control=True,
+                                        portfolio_mode=portfolio_mode,
+                                        softmax_temperature=temperature,
+                                    )
+                                    state_aware_specs.append(spec)
         specs.extend(state_aware_specs)
     return specs
 
@@ -458,6 +511,8 @@ def run_parameter_sweep(
     risk_control_mode_values: tuple[str, ...] = DEFAULT_RISK_CONTROL_MODE_VALUES,
     soft_exposure_min_values: tuple[float, ...] = DEFAULT_SOFT_EXPOSURE_MIN_VALUES,
     state_aware_risk_control_values: tuple[bool, ...] = DEFAULT_STATE_AWARE_RISK_CONTROL_VALUES,
+    portfolio_mode_values: tuple[str, ...] = ("equal",),
+    softmax_temperature_values: tuple[float, ...] = (1.0,),
 ) -> list[ParameterSweepRun]:
     resolved_market_score_control_values = (
         DEFAULT_MARKET_SCORE_CONTROL_VALUES
@@ -490,6 +545,8 @@ def run_parameter_sweep(
         risk_control_mode_values=risk_control_mode_values,
         soft_exposure_min_values=soft_exposure_min_values,
         state_aware_risk_control_values=state_aware_risk_control_values,
+        portfolio_mode_values=portfolio_mode_values,
+        softmax_temperature_values=softmax_temperature_values,
     )
     runs: list[ParameterSweepRun] = []
     for spec in specs:
@@ -510,6 +567,8 @@ def run_parameter_sweep(
             bull_exposure=config.bull_exposure,
             sideways_exposure=config.sideways_exposure,
             bear_exposure=config.bear_exposure,
+            portfolio_mode=spec.portfolio_mode,
+            softmax_temperature=spec.softmax_temperature,
         )
         result = run_backtest(
             data,
@@ -590,35 +649,39 @@ def _write_sweep_metrics(runs: list[ParameterSweepRun], path: Path) -> None:
                 "risk_control_mode",
                 "soft_exposure_min",
                 "state_aware_risk_control",
+                "portfolio_mode",
+                "softmax_temperature",
                 "rebalances",
                 *metric_columns,
             ]
         )
         for rank, run in enumerate(runs, start=1):
-            writer.writerow(
-                [
-                    rank,
-                    run.spec.name,
-                    run.spec.factor_set,
-                    run.spec.description,
-                    ";".join(run.spec.factors),
-                    run.spec.top_k,
-                    f"{run.spec.risk_off_exposure:.6f}",
-                    str(run.spec.risk_control).lower(),
-                    str(run.spec.market_score_control).lower(),
-                    f"{run.spec.market_score_threshold:.6f}",
-                    run.spec.risk_control_mode,
-                    f"{run.spec.soft_exposure_min:.6f}",
-                    str(run.spec.state_aware_risk_control).lower(),
-                    len(run.result.rebalances),
-                    *[
-                        f"{run.result.metrics[metric]:.10f}"
-                        if metric in run.result.metrics
-                        else ""
-                        for metric in metric_columns
-                    ],
-                ]
-            )
+                writer.writerow(
+                    [
+                        rank,
+                        run.spec.name,
+                        run.spec.factor_set,
+                        run.spec.description,
+                        ";".join(run.spec.factors),
+                        run.spec.top_k,
+                        f"{run.spec.risk_off_exposure:.6f}",
+                        str(run.spec.risk_control).lower(),
+                        str(run.spec.market_score_control).lower(),
+                        f"{run.spec.market_score_threshold:.6f}",
+                        run.spec.risk_control_mode,
+                        f"{run.spec.soft_exposure_min:.6f}",
+                        str(run.spec.state_aware_risk_control).lower(),
+                        run.spec.portfolio_mode,
+                        f"{run.spec.softmax_temperature:.6f}",
+                        len(run.result.rebalances),
+                        *[
+                            f"{run.result.metrics[metric]:.10f}"
+                            if metric in run.result.metrics
+                            else ""
+                            for metric in metric_columns
+                        ],
+                    ]
+                )
 
 
 def _write_sweep_equity(runs: list[ParameterSweepRun], path: Path) -> None:
