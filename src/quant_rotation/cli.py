@@ -451,6 +451,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated softmax_temperature values, e.g. 0.5,0.75,1.0,1.5,2.0",
     )
     sweep.add_argument(
+        "--adaptive-top-k",
+        default="false",
+        help="Comma-separated adaptive_top_k values, e.g. false,true",
+    )
+    sweep.add_argument(
+        "--risk-control-dual-ma",
+        default="false",
+        help="Comma-separated risk_control_dual_ma values, e.g. false,true",
+    )
+    sweep.add_argument(
+        "--regime-aware-factors",
+        default="false",
+        help="Comma-separated regime_aware_factors values, e.g. false,true",
+    )
+    sweep.add_argument(
+        "--bull-exposure",
+        default="1.0",
+        help="Comma-separated bull_exposure values for state_aware, e.g. 1.0",
+    )
+    sweep.add_argument(
+        "--sideways-exposure",
+        default="0.5",
+        help="Comma-separated sideways_exposure values for state_aware, e.g. 0.5,0.7,0.9",
+    )
+    sweep.add_argument(
+        "--bear-exposure",
+        default="0.1",
+        help="Comma-separated bear_exposure values for state_aware, e.g. 0.0,0.1,0.2",
+    )
+    sweep.add_argument(
+        "--bull-threshold",
+        default="1.5",
+        help="Comma-separated bull vote thresholds for state_aware, e.g. 0.5,1.0,1.5",
+    )
+    sweep.add_argument(
+        "--bear-threshold",
+        default="0.0",
+        help="Comma-separated bear vote thresholds for state_aware, e.g. -1.0,-0.5,0.0",
+    )
+    sweep.add_argument(
         "--top-n-equity",
         type=int,
         default=10,
@@ -748,6 +788,17 @@ def build_parser() -> argparse.ArgumentParser:
                              help="Output CSV path for industry_prosperity.csv")
     compute_pros.add_argument("--window", type=int, default=60,
                              help="Rolling window for z-score (default: 60)")
+
+    compute_val = subparsers.add_parser(
+        "compute-valuation",
+        help="Compute valuation proxy from industry close data (price percentile)",
+    )
+    compute_val.add_argument("--close-csv", required=True,
+                            help="Path to industry_close.csv")
+    compute_val.add_argument("--output", required=True,
+                            help="Output CSV path for industry_valuation.csv")
+    compute_val.add_argument("--window", type=int, default=252,
+                            help="Rolling window for percentile (default: 252)")
 
     hist_const = subparsers.add_parser(
         "fetch-historical-constituents",
@@ -1297,6 +1348,38 @@ def sweep_command(args: argparse.Namespace) -> int:
         args.softmax_temperature,
         "--softmax-temperature",
     )
+    adaptive_top_k_values = _parse_bool_tuple(
+        args.adaptive_top_k,
+        "--adaptive-top-k",
+    )
+    risk_control_dual_ma_values = _parse_bool_tuple(
+        args.risk_control_dual_ma,
+        "--risk-control-dual-ma",
+    )
+    regime_aware_factors_values = _parse_bool_tuple(
+        args.regime_aware_factors,
+        "--regime-aware-factors",
+    )
+    bull_exposures = _parse_float_tuple(
+        args.bull_exposure,
+        "--bull-exposure",
+    )
+    sideways_exposures = _parse_float_tuple(
+        args.sideways_exposure,
+        "--sideways-exposure",
+    )
+    bear_exposures = _parse_float_tuple(
+        args.bear_exposure,
+        "--bear-exposure",
+    )
+    bull_thresholds = _parse_float_tuple(
+        args.bull_threshold,
+        "--bull-threshold",
+    )
+    bear_thresholds = _parse_float_tuple(
+        args.bear_threshold,
+        "--bear-threshold",
+    )
     runs = run_parameter_sweep(
         industry_data,
         benchmark_closes,
@@ -1321,6 +1404,14 @@ def sweep_command(args: argparse.Namespace) -> int:
         state_aware_risk_control_values=state_aware_risk_control_values,
         portfolio_mode_values=portfolio_mode_values,
         softmax_temperature_values=softmax_temperature_values,
+        adaptive_top_k_values=adaptive_top_k_values,
+        risk_control_dual_ma_values=risk_control_dual_ma_values,
+        regime_aware_factors_values=regime_aware_factors_values,
+        bull_exposures=bull_exposures,
+        sideways_exposures=sideways_exposures,
+        bear_exposures=bear_exposures,
+        bull_thresholds=bull_thresholds,
+        bear_thresholds=bear_thresholds,
     )
     output_dir = args.output_dir or str(Path(app_config.output_dir) / "parameter_sweep")
     write_parameter_sweep_reports(
@@ -2017,6 +2108,30 @@ def compute_prosperity_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def compute_valuation_command(args: argparse.Namespace) -> int:
+    import csv
+    from quant_rotation.data import load_wide_close_csv
+    from quant_rotation.real_data import compute_industry_valuation_proxy
+
+    close_data = load_wide_close_csv(args.close_csv)
+    valuation_data = compute_industry_valuation_proxy(close_data, window=args.window)
+
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["date", *valuation_data.assets])
+        for i, day in enumerate(valuation_data.dates):
+            writer.writerow([
+                day.isoformat(),
+                *[f"{valuation_data.closes[asset][i]:.6f}" for asset in valuation_data.assets],
+            ])
+
+    print(f"Valuation proxy written to: {output_path.resolve()}")
+    print(f"Dates: {len(valuation_data.dates)}, Industries: {len(valuation_data.assets)}")
+    return 0
+
+
 def fetch_historical_constituents_command(args: argparse.Namespace) -> int:
     from quant_rotation.real_data import (
         validate_constituent_snapshot_csv,
@@ -2119,6 +2234,8 @@ def main(argv: list[str] | None = None) -> int:
         return signal_command(args)
     if args.command == "compute-prosperity":
         return compute_prosperity_command(args)
+    if args.command == "compute-valuation":
+        return compute_valuation_command(args)
     if args.command == "fetch-historical-constituents":
         return fetch_historical_constituents_command(args)
     if args.command == "align-sse-benchmark":

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from .factors import simple_return, trailing_mean, trailing_volatility, zscore
+from .factors import simple_return, trailing_mean, trailing_volatility, trend_consistency, zscore
 from .models import PriceData, StockIndustryMap, StockSelectionConfig
 from .portfolio import select_top_k
 
@@ -58,9 +58,16 @@ def compute_stock_scores(
     amount_strength: dict[str, float] = {}
     vol20: dict[str, float] = {}
     ret5: dict[str, float] = {}
+    rel_ret60_raw: dict[str, float] = {}
+    consistency20_raw: dict[str, float] = {}
 
     for stock in candidates:
         closes = stock_data.closes[stock]
+        # Skip stocks with no real price movement (forward-fill artifact)
+        if index >= 20:
+            moved = any(closes[i] != closes[i-1] for i in range(index - 19, index + 1))
+            if not moved:
+                continue
         ret20[stock] = simple_return(closes, index, 20)
         ret60[stock] = simple_return(closes, index, 60)
         vol20[stock] = trailing_volatility(closes, index, 20)
@@ -68,15 +75,20 @@ def compute_stock_scores(
         if stock_amount_data is not None:
             amounts = stock_amount_data.closes[stock]
             amount_ma60 = trailing_mean(amounts, index, 60)
-            if amount_ma60 <= 0:
-                raise ValueError("Stock amount values must have a positive 60-day mean")
-            amount_strength[stock] = trailing_mean(amounts, index, 20) / amount_ma60
+            if amount_ma60 > 0:
+                amount_strength[stock] = trailing_mean(amounts, index, 20) / amount_ma60
+        if config.rel_ret60 != 0:
+            rel_ret60_raw[stock] = ret60[stock]
+        if config.consistency20 != 0:
+            consistency20_raw[stock] = trend_consistency(closes, index, 20)
 
     z_ret20 = zscore(ret20)
     z_ret60 = zscore(ret60)
     z_amount_strength = zscore(amount_strength)
     z_vol20 = zscore(vol20)
     z_ret5 = zscore(ret5)
+    z_rel_ret60 = zscore(rel_ret60_raw)
+    z_consistency20 = zscore(consistency20_raw)
 
     return {
         stock: (
@@ -85,6 +97,8 @@ def compute_stock_scores(
             + config.amount_strength * z_amount_strength.get(stock, 0.0)
             + config.vol20 * z_vol20[stock]
             + config.ret5 * z_ret5[stock]
+            + config.rel_ret60 * z_rel_ret60.get(stock, 0.0)
+            + config.consistency20 * z_consistency20.get(stock, 0.0)
         )
         for stock in candidates
     }
@@ -111,19 +125,34 @@ def stock_target_weights(
         stock_data.assets,
         as_of=signal_date or stock_data.dates[index],
     )
+    selected_industries = {ind for ind, w in industry_weights.items() if w > 0}
+    all_candidates = [
+        stock
+        for ind, stocks in grouped.items()
+        if ind in selected_industries
+        for stock in stocks
+    ]
+    all_scores = compute_stock_scores(
+        stock_data,
+        index,
+        all_candidates,
+        config,
+        stock_amount_data=stock_amount_data,
+    )
     target: dict[str, float] = {}
     for industry, industry_weight in industry_weights.items():
         candidates = grouped.get(industry, [])
         if len(candidates) < config.min_stocks_per_industry:
             continue
-        scores = compute_stock_scores(
-            stock_data,
-            index,
-            candidates,
-            config,
-            stock_amount_data=stock_amount_data,
+        industry_scores = {
+            stock: score
+            for stock, score in all_scores.items()
+            if stock in candidates
+        }
+        selected = select_top_k(
+            industry_scores,
+            min(config.top_n_per_industry, len(industry_scores)),
         )
-        selected = select_top_k(scores, min(config.top_n_per_industry, len(scores)))
         if not selected:
             continue
         per_stock = min(industry_weight / len(selected), config.max_stock_weight)

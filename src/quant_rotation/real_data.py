@@ -545,6 +545,14 @@ def fetch_stock_close_data(
     return closes
 
 
+def _tx_stock_code(symbol: str) -> str:
+    code = _normalize_stock_code(symbol)
+    if not code:
+        return code
+    prefix = "sh" if code.startswith("6") else "sz"
+    return prefix + code
+
+
 def fetch_stock_daily_data(
     symbol: str,
     start: date,
@@ -557,9 +565,8 @@ def fetch_stock_daily_data(
         raise ValueError("start must be earlier than or equal to end")
 
     ak = ak or _require_akshare()
-    frame = ak.stock_zh_a_hist(
-        symbol=_normalize_stock_code(symbol),
-        period="daily",
+    frame = ak.stock_zh_a_hist_tx(
+        symbol=_tx_stock_code(symbol),
         start_date=compact_date(start),
         end_date=compact_date(end),
         adjust=adjust,
@@ -567,18 +574,10 @@ def fetch_stock_daily_data(
     closes: dict[date, float] = {}
     amounts: dict[date, float] = {}
     for row in _records(frame):
-        day = _cell_date(_cell(row, "日期", "date"))
+        day = _cell_date(_cell(row, "date"))
         if start <= day <= end:
-            closes[day] = _cell_float(_cell(row, "收盘", "close"))
-            raw_amount = _cell(
-                row,
-                "成交额",
-                "成交金额",
-                "amount",
-                "成交量",
-                "volume",
-                "vol",
-            )
+            closes[day] = _cell_float(_cell(row, "close"))
+            raw_amount = _cell(row, "amount")
             if raw_amount is not None:
                 amounts[day] = _cell_float(raw_amount)
     return closes, amounts
@@ -665,11 +664,42 @@ def fetch_sw_level1_stock_data(
     if not closes_by_stock:
         raise ValueError("No stock close data returned")
 
-    common_dates = sorted(
-        set.intersection(*(set(values) for values in closes_by_stock.values()))
-    )
+    all_dates: set[date] = set()
+    for values in closes_by_stock.values():
+        all_dates |= set(values)
+    common_dates = sorted(all_dates)
     if not common_dates:
-        raise ValueError("No common trading dates found across stocks")
+        raise ValueError("No trading dates found across stocks")
+
+    for stock, values in closes_by_stock.items():
+        if not values:
+            continue
+        sorted_stock_dates = sorted(values)
+        first_close = values[sorted_stock_dates[0]]
+        filled: dict[date, float] = {}
+        last_close = first_close
+        for day in common_dates:
+            if day in values:
+                last_close = values[day]
+                filled[day] = last_close
+            else:
+                filled[day] = last_close
+        closes_by_stock[stock] = filled
+
+    for stock, values in amounts_by_stock.items():
+        if not values:
+            continue
+        sorted_stock_dates = sorted(values)
+        first_amount = values[sorted_stock_dates[0]]
+        filled: dict[date, float] = {}
+        last_amount = first_amount
+        for day in common_dates:
+            if day in values:
+                last_amount = values[day]
+                filled[day] = last_amount
+            else:
+                filled[day] = 0.0
+        amounts_by_stock[stock] = filled
 
     amount_data = None
     if len(amounts_by_stock) == len(closes_by_stock):
@@ -1530,3 +1560,51 @@ def import_constituent_snapshot(
         row_count = sum(1 for _ in reader)
 
     return row_count
+
+
+def compute_industry_valuation_proxy(
+    close_data: PriceData,
+    window: int = 252,
+    min_periods: int | None = None,
+) -> PriceData:
+    """Compute a price-based valuation proxy for each industry.
+
+    For each industry on each date, computes where the current price sits
+    within its trailing *window*-day range, returning a 0.0–1.0 percentile:
+      0.0 = at or below the window-low (cheapest)
+      1.0 = at or above the window-high (most expensive)
+
+    The output is compatible with ``factors.compute_factor_snapshot``, which
+    feeds ``-value`` into the cross-sectional z-score so that cheaper
+    industries receive higher composite scores.
+    """
+    if window < 20:
+        raise ValueError("window must be at least 20")
+    if min_periods is None:
+        min_periods = window // 2
+
+    assets = list(close_data.assets)
+    n_dates = len(close_data.dates)
+    result_closes: dict[str, list[float]] = {}
+
+    for asset in assets:
+        prices = close_data.closes[asset]
+        percentiles: list[float] = []
+        for i in range(n_dates):
+            lookback_start = max(0, i - window + 1)
+            lookback = prices[lookback_start : i + 1]
+            if len(lookback) < min_periods:
+                percentiles.append(0.5)
+                continue
+            lo = min(lookback)
+            hi = max(lookback)
+            rng = hi - lo
+            if rng <= 0:
+                percentiles.append(0.5)
+            else:
+                pct = (prices[i] - lo) / rng
+                percentiles.append(max(0.0, min(1.0, pct)))
+        result_closes[asset] = percentiles
+
+    return PriceData(dates=close_data.dates, closes=result_closes)
+

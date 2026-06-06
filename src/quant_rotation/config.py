@@ -78,6 +78,8 @@ def load_config(path: str | Path) -> AppConfig:
         amount_strength=float(factors.get("stock_amount_strength_weight", 0.10)),
         vol20=float(factors.get("stock_vol20_weight", -0.20)),
         ret5=float(factors.get("stock_ret5_weight", -0.10)),
+        rel_ret60=float(factors.get("stock_rel_ret60_weight", 0.00)),
+        consistency20=float(factors.get("stock_consistency20_weight", 0.00)),
     )
     strategy_config = StrategyConfig(
         rebalance_every=int(strategy.get("rebalance_every", 20)),
@@ -105,6 +107,12 @@ def load_config(path: str | Path) -> AppConfig:
         bear_factor_weights=_parse_regime_factors(strategy.get("bear_factors", {})),
         portfolio_mode=str(strategy.get("portfolio_mode", "equal")),
         softmax_temperature=float(strategy.get("softmax_temperature", 1.0)),
+        adaptive_top_k=bool(strategy.get("adaptive_top_k", False)),
+        adaptive_top_k_base=int(strategy.get("adaptive_top_k_base", 5)),
+        adaptive_top_k_concentration=float(strategy.get("adaptive_top_k_concentration", 1.5)),
+        risk_control_dual_ma=bool(strategy.get("risk_control_dual_ma", False)),
+        state_aware_bull_threshold=float(strategy.get("state_aware_bull_threshold", 1.5)),
+        state_aware_bear_threshold=float(strategy.get("state_aware_bear_threshold", 0.0)),
         factor_weights=factor_weights,
         stock_selection=stock_selection,
     )

@@ -13,7 +13,7 @@ from .models import (
     StockIndustryMap,
     StrategyConfig,
 )
-from .portfolio import equal_weight_target, softmax_weight_target, turnover, vol_parity_target
+from .portfolio import adaptive_top_k, equal_weight_target, softmax_weight_target, turnover, vol_parity_target
 from .stock_selection import stock_target_weights
 
 
@@ -56,27 +56,49 @@ def soft_risk_exposure(
     return min_exp + (max_exp - min_exp) * raw
 
 
+def _rolling_std(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+    return math.sqrt(variance)
+
+
 def classify_market_state(
     market_score: float,
     benchmark_closes: list[float] | None,
     signal_index: int,
     ma_window: int,
     vol_hist: list[float] | None = None,
+    bull_threshold: float = 1.5,
+    bear_threshold: float = 0.0,
 ) -> str:
+    votes = 0.0
+
     if benchmark_closes is not None and signal_index >= 60:
         ma20 = sum(benchmark_closes[signal_index - 19 : signal_index + 1]) / 20.0
         ma60 = sum(benchmark_closes[signal_index - 59 : signal_index + 1]) / 60.0
-        trend_up = ma20 > ma60
-        trend_strength = ma20 / ma60 - 1.0
-    else:
-        trend_up = False
-        trend_strength = 0.0
+        votes += 1.0 if ma20 > ma60 else -1.0
 
-    if market_score > 0.03 and trend_up:
+    if vol_hist is not None and signal_index >= 60:
+        daily_rets = [
+            vol_hist[i] / vol_hist[i - 1] - 1.0
+            for i in range(signal_index - 59, signal_index + 1)
+        ]
+        recent_vol = _rolling_std(daily_rets[-20:])
+        hist_vol = _rolling_std(daily_rets)
+        votes += 0.0 if recent_vol > 1.5 * hist_vol else 0.5
+
+    if market_score > 0.03:
+        votes += 1.0
+    elif market_score < -0.03:
+        votes += -1.0
+
+    if votes >= bull_threshold:
         return "bull"
-    elif market_score < -0.03 or (trend_strength < -0.05 and not trend_up):
-        return "bear"
-    return "sideways"
+    elif votes >= bear_threshold:
+        return "sideways"
+    return "bear"
 
 
 def _state_aware_exposure(
@@ -88,10 +110,14 @@ def _state_aware_exposure(
     bull_exposure: float = 1.0,
     sideways_exposure: float = 0.5,
     bear_exposure: float = 0.1,
+    bull_threshold: float = 1.5,
+    bear_threshold: float = 0.0,
 ) -> float:
     state = classify_market_state(
         market_score, benchmark_closes, signal_index, ma_window,
         vol_hist=benchmark_closes,
+        bull_threshold=bull_threshold,
+        bear_threshold=bear_threshold,
     )
     if state == "bull":
         return bull_exposure
@@ -142,6 +168,17 @@ def _market_trend(
     window = benchmark_closes[signal_index - ma_window + 1 : signal_index + 1]
     moving_average = sum(window) / len(window)
     return benchmark_closes[signal_index] > moving_average
+
+
+def _dual_ma_trend(
+    benchmark_closes: list[float] | None,
+    signal_index: int,
+) -> bool:
+    if benchmark_closes is None or signal_index < 60:
+        return True
+    ma20 = sum(benchmark_closes[signal_index - 19 : signal_index + 1]) / 20.0
+    ma60 = sum(benchmark_closes[signal_index - 59 : signal_index + 1]) / 60.0
+    return ma20 > ma60
 
 
 def _normalized_market_weights(
@@ -292,11 +329,15 @@ def run_backtest(
 
         signal_index = rebalance_by_execution_index.get(index)
         if signal_index is not None:
-            trend_ok = (
-                _market_trend(benchmark_closes, signal_index, config.market_ma_window)
-                if config.risk_control
-                else True
-            )
+            if config.risk_control_dual_ma:
+                trend_ok = _dual_ma_trend(benchmark_closes, signal_index)
+            elif config.risk_control:
+                trend_ok = _market_trend(
+                    benchmark_closes, signal_index, config.market_ma_window
+                )
+            else:
+                trend_ok = True
+
             score = (
                 _market_score(
                     market_data,
@@ -330,6 +371,14 @@ def run_backtest(
             score_ok = score is None or score >= config.market_score_threshold
             risk_on = trend_ok and score_ok
 
+            effective_top_k = config.top_k
+            if config.adaptive_top_k:
+                effective_top_k = adaptive_top_k(
+                    snapshot.scores,
+                    base_k=config.adaptive_top_k_base,
+                    concentration_threshold=config.adaptive_top_k_concentration,
+                )
+
             if (
                 config.risk_control_mode == "soft"
                 and config.market_score_control
@@ -359,13 +408,15 @@ def run_backtest(
                     bull_exposure=config.bull_exposure,
                     sideways_exposure=config.sideways_exposure,
                     bear_exposure=config.bear_exposure,
+                    bull_threshold=config.state_aware_bull_threshold,
+                    bear_threshold=config.state_aware_bear_threshold,
                 )
             else:
                 exposure = 1.0 if risk_on else config.risk_off_exposure
             if config.portfolio_mode == "softmax":
                 industry_target_weights = softmax_weight_target(
                     snapshot.scores,
-                    top_k=config.top_k,
+                    top_k=effective_top_k,
                     exposure=exposure,
                     max_weight=config.max_industry_weight,
                     temperature=config.softmax_temperature,
@@ -378,14 +429,14 @@ def run_backtest(
                 industry_target_weights = vol_parity_target(
                     snapshot.scores,
                     vol_snapshot,
-                    top_k=config.top_k,
+                    top_k=effective_top_k,
                     exposure=exposure,
                     max_weight=config.max_industry_weight,
                 )
             else:
                 industry_target_weights = equal_weight_target(
                     snapshot.scores,
-                    top_k=config.top_k,
+                    top_k=effective_top_k,
                     exposure=exposure,
                     max_weight=config.max_industry_weight,
                 )

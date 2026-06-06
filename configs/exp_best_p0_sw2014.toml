@@ -1,0 +1,45 @@
+# Layer 2 validation: ret60_ret5_consistency + top_k=3 on sw2014
+# Best P0 config tested on sw2014 OOS WF
+
+[data]
+industry_close = "../data/real_sw2014/industry_close.csv"
+industry_amount = "../data/real_sw2014/industry_amount.csv"
+industry_prosperity = "../data/real_sw2014/industry_prosperity.csv"
+benchmark_close = "../data/real_sw2014/benchmark_close.csv"
+market_close = "../data/real_sw2014/market_close.csv"
+
+[strategy]
+rebalance_every = 20
+top_k = 3
+max_industry_weight = 0.35
+transaction_cost = 0.001
+risk_control = true
+market_ma_window = 120
+market_score_control = false
+market_score_window = 60
+market_score_threshold = 0.0
+risk_off_exposure = 0.00
+
+[factors]
+ret20_weight = 0.00
+ret60_weight = 1.00
+ret120_weight = 0.00
+rel_ret60_weight = 0.00
+rel_ret20_weight = 0.00
+momentum_accel_weight = 0.00
+consistency60_weight = 0.25
+amount_strength_weight = 0.00
+breadth20_weight = 0.00
+breadth60_weight = 0.00
+valuation_weight = 0.00
+prosperity_weight = 0.00
+vol20_weight = 0.00
+ret5_weight = -0.50
+
+[reports]
+output_dir = "../reports/exp_p0_layer2_sw2014"
+
+[market_weights]
+CSI300 = 0.50
+CSIAll = 0.30
+ChiNext = 0.20

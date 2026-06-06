@@ -23,9 +23,9 @@ portfolio_mode = "equal"
 
 [factors]
 ret20_weight = 0.00
-ret60_weight = 1.00
+ret60_weight = 0.00
 ret120_weight = 0.00
-rel_ret60_weight = 0.00
+rel_ret60_weight = 1.00
 rel_ret20_weight = 0.00
 momentum_accel_weight = 0.00
 consistency60_weight = 0.00
@@ -38,7 +38,7 @@ vol20_weight = 0.00
 ret5_weight = -0.50
 
 [reports]
-output_dir = "../reports/exp_rel_momentum_sw2014"
+output_dir = "../reports/exp_rel_momentum_sw2014_rel"
 
 [market_weights]
 CSI300 = 0.50

@@ -1,0 +1,42 @@
+# v4d: reversal + low-vol + consistency quality
+[data]
+industry_close = "../data/real_sw2021/industry_close.csv"
+industry_amount = "../data/real_sw2021/industry_amount.csv"
+industry_prosperity = "../data/real_sw2021/industry_prosperity.csv"
+benchmark_close = "../data/real_sw2021/benchmark_close.csv"
+market_close = "../data/real_sw2021/market_close.csv"
+stock_close = "../data/real_sw2021/stock_close.csv"
+stock_amount = "../data/real_sw2021/stock_amount.csv"
+stock_industry_map = "../data/real_sw2021/stock_industry_map.csv"
+
+[strategy]
+rebalance_every = 20
+top_k = 3
+max_industry_weight = 0.35
+transaction_cost = 0.001
+risk_control = true
+market_ma_window = 120
+market_score_control = false
+risk_off_exposure = 0.00
+stock_selection = true
+stock_top_n_per_industry = 3
+stock_min_stocks_per_industry = 1
+stock_max_weight = 0.15
+
+[factors]
+ret60_weight = 1.00
+ret5_weight = -0.50
+consistency60_weight = 0.25
+
+stock_ret60_weight = 0.00
+stock_vol20_weight = -0.30
+stock_ret5_weight = -0.30
+stock_consistency20_weight = 0.20
+
+[reports]
+output_dir = "../reports/exp_d_stock_v4d"
+
+[market_weights]
+CSI300 = 0.50
+CSIAll = 0.30
+ChiNext = 0.20

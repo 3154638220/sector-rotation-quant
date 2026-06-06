@@ -1,0 +1,17 @@
+{
+  "provider": "akshare",
+  "stock_source": "sw_level1_current_constituents",
+  "current_constituents": true,
+  "survivor_bias_warning": "Stock data and stock_industry_map were built from current SW constituents. Use historical constituent snapshots before treating this as unbiased production research data.",
+  "start": "2021-12-13",
+  "end": "2026-06-02",
+  "rows": 1081,
+  "stocks": 310,
+  "industries": 31,
+  "generated_at": "2026-06-04T20:34:49",
+  "files": {
+    "stock_close": "stock_close.csv",
+    "stock_amount": "stock_amount.csv",
+    "stock_industry_map": "stock_industry_map.csv"
+  }
+}

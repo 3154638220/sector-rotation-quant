@@ -112,6 +112,8 @@ class StockSelectionConfig:
     amount_strength: float = 0.10
     vol20: float = -0.20
     ret5: float = -0.10
+    rel_ret60: float = 0.00
+    consistency20: float = 0.00
 
 
 @dataclass(frozen=True)
@@ -141,6 +143,12 @@ class StrategyConfig:
     bear_factor_weights: FactorWeights = field(default_factory=FactorWeights)
     portfolio_mode: str = "equal"
     softmax_temperature: float = 1.0
+    adaptive_top_k: bool = False
+    adaptive_top_k_base: int = 5
+    adaptive_top_k_concentration: float = 1.5
+    risk_control_dual_ma: bool = False
+    state_aware_bull_threshold: float = 1.5
+    state_aware_bear_threshold: float = 0.0
     factor_weights: FactorWeights = field(default_factory=FactorWeights)
     stock_selection: StockSelectionConfig = field(default_factory=StockSelectionConfig)
 
