@@ -151,6 +151,21 @@ class StrategyConfig:
     state_aware_bear_threshold: float = 0.0
     factor_weights: FactorWeights = field(default_factory=FactorWeights)
     stock_selection: StockSelectionConfig = field(default_factory=StockSelectionConfig)
+    annual_budget_control: bool = False
+    annual_budget_target: float = 0.12
+    annual_budget_lock_trigger: float = 0.10
+    annual_budget_min_exposure: float = 0.50
+    vol_targeting: bool = False
+    vol_target_level: float = 0.15
+    vol_target_window: int = 20
+    vol_target_min_exposure: float = 0.30
+    defensive_mode: bool = False
+    defensive_top_k: int = 3
+    defensive_exposure_threshold: float = 0.50
+    strategy_mode: str = "absolute"
+    defensive_sector_filter: bool = False
+    defensive_sector_cap: float = 0.50
+    relative_excess_target: float = 0.05
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,46 @@
+[data]
+industry_close = "../data/real_sw2021/industry_close.csv"
+industry_amount = "../data/real_sw2021/industry_amount.csv"
+benchmark_close = "../data/real_sw2021/benchmark_close.csv"
+market_close = "../data/real_sw2021/market_close.csv"
+
+[strategy]
+rebalance_every = 20
+top_k = 3
+max_industry_weight = 0.30
+transaction_cost = 0.001
+risk_control = true
+market_ma_window = 120
+market_score_control = true
+market_score_window = 60
+market_score_threshold = 0.0
+risk_control_mode = "soft"
+soft_exposure_min = 0.20
+soft_exposure_max = 1.00
+soft_exposure_center = 0.0
+soft_exposure_steepness = 15.0
+risk_off_exposure = 0.20
+portfolio_mode = "softmax"
+softmax_temperature = 0.75
+
+[factors]
+ret20_weight = 0.00
+ret60_weight = 0.00
+ret120_weight = 0.00
+rel_ret60_weight = 1.00
+amount_strength_weight = 0.00
+breadth20_weight = 0.00
+breadth60_weight = 0.00
+valuation_weight = 0.00
+prosperity_weight = 0.00
+consistency60_weight = 0.20
+vol20_weight = 0.00
+ret5_weight = -0.50
+
+[reports]
+output_dir = "../reports/candidate_h3_aggressive"
+
+[market_weights]
+CSI300 = 0.50
+CSIAll = 0.30
+ChiNext = 0.20

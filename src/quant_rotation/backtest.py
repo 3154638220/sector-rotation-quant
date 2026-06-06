@@ -16,6 +16,36 @@ from .models import (
 from .portfolio import adaptive_top_k, equal_weight_target, softmax_weight_target, turnover, vol_parity_target
 from .stock_selection import stock_target_weights
 
+DEFENSIVE_INDUSTRIES: set[str] = {
+    "银行",
+    "公用事业",
+    "交通运输",
+    "食品饮料",
+    "农林牧渔",
+}
+
+CYCLICAL_INDUSTRIES: set[str] = {
+    "计算机",
+    "电子",
+    "国防军工",
+    "有色金属",
+    "电力设备",
+    "汽车",
+}
+
+
+def filter_by_regime(
+    scores: dict[str, float],
+    regime: str,
+    defensive_cap: float = 0.5,
+) -> dict[str, float]:
+    if regime != "bear":
+        return scores
+    return {
+        asset: score * (defensive_cap if asset in CYCLICAL_INDUSTRIES else 1.0)
+        for asset, score in scores.items()
+    }
+
 
 def _classify_regime_for_factors(
     benchmark_closes: list[float] | None,
@@ -230,6 +260,103 @@ def _stock_map_symbols(stock_industry_map: StockIndustryMap | dict[str, str]) ->
     return set(stock_industry_map)
 
 
+def _select_defensive_holdings(
+    factor_snapshot: FactorSnapshot,
+    top_k: int = 3,
+) -> dict[str, float]:
+    vol_scores = factor_snapshot.fields.get("vol20", {})
+    if not vol_scores:
+        return {}
+    ranked = sorted(vol_scores.items(), key=lambda x: x[1])
+    holdings = [asset for asset, _ in ranked[:top_k]]
+    per_weight = 1.0 / len(holdings)
+    return {asset: per_weight for asset in holdings}
+
+
+def vol_target_exposure(
+    benchmark_closes: list[float],
+    signal_index: int,
+    vol_window: int = 20,
+    target_vol: float = 0.15,
+    annual_factor: float = 252.0,
+    min_exposure: float = 0.30,
+    max_exposure: float = 1.00,
+) -> float:
+    if signal_index < vol_window:
+        return max_exposure
+    returns = [
+        benchmark_closes[i] / benchmark_closes[i - 1] - 1.0
+        for i in range(signal_index - vol_window + 1, signal_index + 1)
+    ]
+    mean_r = sum(returns) / len(returns)
+    variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+    realized_vol_daily = math.sqrt(variance)
+    realized_vol_annual = realized_vol_daily * math.sqrt(annual_factor)
+    if realized_vol_annual <= 0:
+        return max_exposure
+    raw = target_vol / realized_vol_annual
+    return max(min_exposure, min(max_exposure, raw))
+
+
+def _annual_budget_exposure_adjustment(
+    strategy_equity: list[float],
+    current_index: int,
+    dates: list[date],
+    annual_target: float = 0.12,
+    lock_trigger: float = 0.10,
+    min_exposure_after_lock: float = 0.50,
+    mode: str = "absolute",
+    benchmark_equity: list[float] | None = None,
+    relative_excess_target: float = 0.05,
+) -> float:
+    current_year = dates[current_index].year
+    year_start_index = next(
+        (i for i, d in enumerate(dates) if d.year == current_year),
+        0,
+    )
+    if current_index <= year_start_index:
+        return 1.0
+
+    current_equity = strategy_equity[-1]
+    year_start_equity = (
+        strategy_equity[year_start_index]
+        if year_start_index < len(strategy_equity)
+        else strategy_equity[0]
+    )
+    if year_start_equity <= 0:
+        return 1.0
+
+    ytd_return = current_equity / year_start_equity - 1.0
+
+    if mode == "relative" and benchmark_equity is not None:
+        if current_index >= len(benchmark_equity):
+            return 1.0
+        year_start_bench = (
+            benchmark_equity[year_start_index]
+            if year_start_index < len(benchmark_equity)
+            else benchmark_equity[0]
+        )
+        current_bench = benchmark_equity[current_index]
+        if year_start_bench <= 0:
+            return 1.0
+        bench_ytd = current_bench / year_start_bench - 1.0
+        relative_excess = ytd_return - bench_ytd
+        if relative_excess < relative_excess_target:
+            return 1.0
+        excess = relative_excess - relative_excess_target
+        scale = relative_excess_target
+        factor = max(min_exposure_after_lock, 1.0 - excess / scale)
+        return factor
+
+    if ytd_return < lock_trigger:
+        return 1.0
+
+    excess = ytd_return - lock_trigger
+    scale = lock_trigger
+    factor = max(min_exposure_after_lock, 1.0 - excess / scale)
+    return factor
+
+
 def run_backtest(
     data: PriceData,
     benchmark_closes: list[float] | None,
@@ -322,6 +449,7 @@ def run_backtest(
         signal_index + 1: signal_index
         for signal_index in range(min_history, len(data.dates) - 1, config.rebalance_every)
     }
+    benchmark_equity = _benchmark_equity(benchmark_closes)
 
     for index in range(1, len(data.dates)):
         day_return = _weighted_return(current_weights, _asset_returns(return_data, index))
@@ -371,10 +499,23 @@ def run_backtest(
             score_ok = score is None or score >= config.market_score_threshold
             risk_on = trend_ok and score_ok
 
+            filter_regime = regime if config.regime_aware_factors else _classify_regime_for_factors(
+                benchmark_closes, signal_index,
+                config.market_ma_window, score,
+            )
+
+            effective_scores = snapshot.scores
+            if config.defensive_sector_filter:
+                effective_scores = filter_by_regime(
+                    snapshot.scores,
+                    filter_regime,
+                    defensive_cap=config.defensive_sector_cap,
+                )
+
             effective_top_k = config.top_k
             if config.adaptive_top_k:
                 effective_top_k = adaptive_top_k(
-                    snapshot.scores,
+                    effective_scores,
                     base_k=config.adaptive_top_k_base,
                     concentration_threshold=config.adaptive_top_k_concentration,
                 )
@@ -413,9 +554,45 @@ def run_backtest(
                 )
             else:
                 exposure = 1.0 if risk_on else config.risk_off_exposure
-            if config.portfolio_mode == "softmax":
+
+            if config.vol_targeting and benchmark_closes is not None:
+                exposure = vol_target_exposure(
+                    benchmark_closes,
+                    signal_index,
+                    vol_window=config.vol_target_window,
+                    target_vol=config.vol_target_level,
+                    min_exposure=config.vol_target_min_exposure,
+                )
+
+            if config.annual_budget_control:
+                budget_factor = _annual_budget_exposure_adjustment(
+                    strategy_equity,
+                    index,
+                    data.dates,
+                    annual_target=config.annual_budget_target,
+                    lock_trigger=config.annual_budget_lock_trigger,
+                    min_exposure_after_lock=config.annual_budget_min_exposure,
+                    mode=config.strategy_mode,
+                    benchmark_equity=benchmark_equity,
+                    relative_excess_target=config.relative_excess_target,
+                )
+                exposure *= budget_factor
+
+            defensive = (
+                config.defensive_mode
+                and exposure < config.defensive_exposure_threshold
+            )
+
+            if defensive:
+                industry_target_weights = {
+                    asset: weight * exposure
+                    for asset, weight in _select_defensive_holdings(
+                        snapshot, top_k=config.defensive_top_k,
+                    ).items()
+                }
+            elif config.portfolio_mode == "softmax":
                 industry_target_weights = softmax_weight_target(
-                    snapshot.scores,
+                    effective_scores,
                     top_k=effective_top_k,
                     exposure=exposure,
                     max_weight=config.max_industry_weight,
@@ -427,7 +604,7 @@ def run_backtest(
                     for asset, closes in data.closes.items()
                 }
                 industry_target_weights = vol_parity_target(
-                    snapshot.scores,
+                    effective_scores,
                     vol_snapshot,
                     top_k=effective_top_k,
                     exposure=exposure,
@@ -435,7 +612,7 @@ def run_backtest(
                 )
             else:
                 industry_target_weights = equal_weight_target(
-                    snapshot.scores,
+                    effective_scores,
                     top_k=effective_top_k,
                     exposure=exposure,
                     max_weight=config.max_industry_weight,
@@ -477,7 +654,6 @@ def run_backtest(
         daily_returns.append(next_equity / strategy_equity[-1] - 1.0)
         strategy_equity.append(next_equity)
 
-    benchmark_equity = _benchmark_equity(benchmark_closes)
     equal_weight_equity = _equal_weight_equity(return_data)
     metrics = summarize_performance(
         data.dates,

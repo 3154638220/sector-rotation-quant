@@ -821,6 +821,29 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Directory containing equity_curve.csv")
     align_sse.add_argument("--output", default=None,
                           help="Output CSV path (default: <report-dir>/sse_composite.csv)")
+
+    combine = subparsers.add_parser(
+        "combine",
+        help="Combine multiple strategy equity curves into a weighted aggregate",
+    )
+    combine.add_argument(
+        "--equity-paths",
+        nargs="+",
+        required=True,
+        help="Paths to equity_curve.csv files from multiple backtests",
+    )
+    combine.add_argument(
+        "--weights",
+        nargs="+",
+        type=float,
+        required=True,
+        help="Weights for each strategy (must match number of equity-paths)",
+    )
+    combine.add_argument(
+        "--output",
+        default="reports/combined/combined_equity.csv",
+        help="Output path for combined equity curve",
+    )
     return parser
 
 
@@ -2240,5 +2263,87 @@ def main(argv: list[str] | None = None) -> int:
         return fetch_historical_constituents_command(args)
     if args.command == "align-sse-benchmark":
         return align_sse_benchmark_command(args)
+    if args.command == "combine":
+        return combine_command(args)
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+def combine_command(args: argparse.Namespace) -> int:
+    import csv
+    from datetime import date as dt_date
+
+    def _read_equity_csv(path: str) -> tuple[list[dt_date], list[float]]:
+        dates: list[dt_date] = []
+        equity: list[float] = []
+        with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                dates.append(dt_date.fromisoformat(row["date"]))
+                equity.append(float(row["strategy_equity"]))
+        return dates, equity
+
+    base = Path(__file__).resolve().parent.parent.parent
+    equity_paths = [str(Path(p) if Path(p).is_absolute() else base / p) for p in args.equity_paths]
+    output = str(Path(args.output) if Path(args.output).is_absolute() else base / args.output)
+    weights = args.weights
+
+    if len(equity_paths) < 2:
+        print("Need at least 2 strategy equity curves to combine")
+        return 1
+    if len(equity_paths) != len(weights):
+        print("Number of equity-paths must match number of weights")
+        return 1
+
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        print("Weights must sum to a positive value")
+        return 1
+    normalized = [w / total_weight for w in weights]
+
+    equity_data = [_read_equity_csv(p) for p in equity_paths]
+
+    first_dates = equity_data[0][0]
+    for i in range(1, len(equity_data)):
+        if equity_data[i][0] != first_dates:
+            print(f"Date mismatch: {equity_paths[0]} and {equity_paths[i]}")
+            return 1
+
+    combined = [1.0]
+    for t in range(1, len(first_dates)):
+        day_return = sum(
+            normalized[i] * (equity_data[i][1][t] / equity_data[i][1][t - 1] - 1.0)
+            for i in range(len(equity_paths))
+        )
+        combined.append(combined[-1] * (1.0 + day_return))
+
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["date", "combined_equity"])
+        for i, d in enumerate(first_dates):
+            writer.writerow([d.isoformat(), f"{combined[i]:.6f}"])
+
+    final_return = combined[-1] - 1.0
+    years = (first_dates[-1] - first_dates[0]).days / 365.25
+    annualized = (combined[-1] ** (1.0 / years)) - 1.0 if years > 0 else 0.0
+
+    peak = combined[0]
+    max_drawdown = 0.0
+    for v in combined:
+        if v > peak:
+            peak = v
+        dd = (v / peak - 1.0) if peak > 0 else 0.0
+        if dd < max_drawdown:
+            max_drawdown = dd
+
+    print(f"Combined equity written to: {output_path}")
+    print(f"Strategies: {len(equity_paths)}")
+    print(f"Weights: {[f'{w:.1%}' for w in normalized]}")
+    print(f"Date range: {first_dates[0]} to {first_dates[-1]}")
+    print(f"Final equity: {combined[-1]:.4f}")
+    print(f"Total return: {final_return:.2%}")
+    print(f"Annualized return: {annualized:.2%}")
+    print(f"Max drawdown: {max_drawdown:.2%}")
+    return 0

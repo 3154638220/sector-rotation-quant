@@ -1,0 +1,62 @@
+# 候选 H1 增强型：防御板块过滤 + 相对收益模式
+# 基于 candidate_h1_defensive.toml，新增 Phase J 功能
+
+[data]
+industry_close = "../data/real_sw2021/industry_close.csv"
+industry_amount = "../data/real_sw2021/industry_amount.csv"
+benchmark_close = "../data/real_sw2021/benchmark_close.csv"
+market_close = "../data/real_sw2021/market_close.csv"
+
+[strategy]
+rebalance_every = 20
+top_k = 3
+max_industry_weight = 0.30
+transaction_cost = 0.001
+risk_control = true
+market_ma_window = 120
+market_score_control = true
+market_score_window = 60
+market_score_threshold = 0.0
+risk_control_mode = "soft"
+soft_exposure_min = 0.30
+soft_exposure_max = 1.00
+soft_exposure_center = 0.0
+soft_exposure_steepness = 15.0
+risk_off_exposure = 0.30
+portfolio_mode = "softmax"
+softmax_temperature = 1.0
+annual_budget_control = true
+annual_budget_target = 0.12
+annual_budget_lock_trigger = 0.10
+annual_budget_min_exposure = 0.50
+defensive_mode = true
+defensive_top_k = 3
+defensive_exposure_threshold = 0.50
+
+# J.1: 防御板块过滤 — 熊市中对周期性行业降权
+defensive_sector_filter = true
+defensive_sector_cap = 0.50
+
+# J.2: 相对收益模式 — 目标为跑赢基准 + 5%（而非绝对正收益）
+mode = "absolute"  # 可选 "relative"
+# relative_excess_target = 0.05
+
+[factors]
+ret20_weight = 0.00
+ret60_weight = 1.00
+ret120_weight = 0.00
+amount_strength_weight = 0.00
+breadth20_weight = 0.00
+breadth60_weight = 0.00
+valuation_weight = 0.00
+prosperity_weight = 0.00
+vol20_weight = 0.00
+ret5_weight = -0.50
+
+[reports]
+output_dir = "../reports/candidate_h1_enhanced"
+
+[market_weights]
+CSI300 = 0.50
+CSIAll = 0.30
+ChiNext = 0.20
