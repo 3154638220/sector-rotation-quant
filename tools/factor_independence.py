@@ -49,7 +49,11 @@ def cross_sectional_correlation(
 
 
 def main():
-    config_path = "configs/exp_valuation.toml"
+    import argparse
+    parser = argparse.ArgumentParser(description="Factor independence check")
+    parser.add_argument("--config", default="configs/exp_valuation.toml", help="Config path")
+    args = parser.parse_args()
+    config_path = args.config
     app_config = load_config(config_path)
 
     industry_data = load_wide_close_csv(app_config.industry_close_path)

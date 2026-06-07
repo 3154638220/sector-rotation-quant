@@ -1,17 +1,19 @@
 {
   "provider": "akshare",
-  "stock_source": "sw_level1_current_constituents",
-  "current_constituents": true,
-  "survivor_bias_warning": "Stock data and stock_industry_map were built from current SW constituents. Use historical constituent snapshots before treating this as unbiased production research data.",
+  "stock_source": "sw_level1_historical_constituent_snapshots",
+  "current_constituents": false,
   "start": "2021-12-13",
-  "end": "2026-06-02",
-  "rows": 1081,
-  "stocks": 310,
+  "end": "2026-06-03",
+  "rows": 1082,
+  "stocks": 5238,
   "industries": 31,
-  "generated_at": "2026-06-04T20:34:49",
+  "generated_at": "2026-06-06T22:55:00",
   "files": {
     "stock_close": "stock_close.csv",
     "stock_amount": "stock_amount.csv",
     "stock_industry_map": "stock_industry_map.csv"
-  }
+  },
+  "snapshot_count": 173,
+  "snapshot_start": "2021-12-13",
+  "snapshot_end": "2026-06-03"
 }

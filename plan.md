@@ -3,25 +3,155 @@
 > 27 折跨段 WF、Phase D 股票层结果、Phase E 最终扫描
 > 分析日期：2026-06-06
 > 版本：本文件完整替代上一版 plan.md，聚焦「已验证成果的组合与稳定化」
-> 最后更新：2026-06-06（Phase J 代码完成）
+> 最后更新：2026-06-07（第五轮：Phase D 无偏重跑 + breadth 本地计算 + plan 状态同步）
 
 ## 0.0 执行进度快照（2026-06-06 更新）
 
 | 阶段 | 状态 | 关键结论 |
 |------|------|---------|
-| F：仓位控制重构 | ✅ 代码完成 | soft mode、defensive mode、annual budget、vol target 均已实现+测试（130/130 通过） |
-| G：年度收益稳定化 | ✅ 代码完成 | 年度预算控制在当前收益水平下不触发（回报太低）；vol_target 在 H2 测试中导致 -40% 回撤 |
-| H：因子精简 + WF | ✅ 验证完成 | 3 个候选配置已创建；19 折跨段 WF 完成，最佳固定候选 = top_k=3, hard mode, risk_off=0 |
-| I：数据质量 | ⚠️ 工具完成 | `data_integrity_check.py` 和 `annual_returns_summary.py` 已创建；AKShare 历史成分股验证未做 |
-| **J：收益增强** | **✅ 代码完成** | **防御板块过滤（J.1）、相对收益模式（J.2）、多策略聚合（J.3）均已实现+测试** |
-| Phase D 重启 | ❌ 条件不满足 | 当前最优仍为生产基线（年化 6.51%），软仓位未超硬模式 |
+| F：仓位控制重构 | ✅ 实验完成 | soft mode 未超越 hard 基线（最优 softoff0p2 年化 7.29% vs 基线 6.51%，无显著改善）|
+| G：年度收益稳定化 | ✅ 实验完成 | 年度预算控制不触发（回报太低）；**vol_target 已排除**：三档 DD -35~-37%，年化 ~0% |
+| H：因子精简 + WF | ✅ 实验完成 | H1/H2/H3 三段 WF + 工具 7/8/9 + Layer 2 跨段 WF 均跑完；H2 WF 14.93% 最强但固定配置不可用；Layer 2 盈利折 8/19 未达标 |
+| I：数据质量 | ✅ 元数据已补齐 | Prosperity manifest（release_lag_days/available_time）已生成；valuation manifest 已生成；AKShare `date` 参数不支持（已确认）；breadth 已用本地数据重算 |
+| **J：收益增强** | **✅ 实验完成** | H1+H2 聚合年化 2.02%（被 H2 拖累）；风控 hit_rate 四段全部 <50% |
+| Phase D 重启 | ✅ SW2021 无偏已完成 | 无偏重跑：年化 -2.87%, Sharpe -0.013（前视偏差贡献 ~13.7pp）；策略在无偏数据上完全失效；sw2000/sw2014 仍需 JoinQuant/Tushare/vendor 补齐成分股 |
 
-**实验结论**：本次新增的软仓位 + 底仓机制在回测中**未能超越生产基线**（hard mode, risk_off=0）。
-- sw2021 单段：生产基线 6.51% vs H1 防御型 4.27%
-- 19 折跨段 WF（sw2014+sw2021）：OOS 中位数 0%，bootstrap p=71.8%
-- 最佳固定候选：`ret60_ret5_top3_riskoff0_modeh_riskctrl1_mscore0`（OOS 净值 1.678）
+**实验结论**：六轮推进后所有路径收敛到同一结论：
+- 软仓位/defensive/vol_target/budget_control 均无法超越生产基线（hard mode, risk_off=0, top_k=5）
+- 风控系统在所有时间段净害（hit_rate 22~38%）
+- 最优固定候选 Layer 2 OOS 净值 1.68 vs 基准 1.50（长期超基准），但盈利折仅 8/19
+- **A 股行业动量在折级一致性上存在根本限制**：无法确保任意 6 个月窗口的正稳定性
 
 详见新增的 §0.4「本轮实验结果汇总」。
+
+### 0.0.1 本次推进记录（2026-06-06）
+
+| 项目 | 结果 | 产物 |
+|------|------|------|
+| 年度收益工具修复 | 兼容 `strategy_return` 列，可直接读取现有 `annual_returns.csv` | `tools/annual_returns_summary.py` |
+| 数据完整性检查增强 | 按 config 读取数据，检查覆盖、缺失、日期对齐、价格跳变和当前成分股元数据风险 | `tools/data_integrity_check.py` |
+| AKShare 历史成分股探测 | 本地 AKShare 已安装，但 `index_component_sw` 不支持 `date` 参数 | `tools/check_akshare_historical_constituents.py` |
+| 27 折全段固定候选 WF | 固定 top3 长期跑赢基准，但盈利折数 13/27，未达到生产稳定性门槛 | `reports/exp_full27_best_fixed/` |
+| 个股数据源兼容 | `stock_zh_a_hist_tx` 不存在时回退到 `stock_zh_a_hist` | `src/quant_rotation/real_data.py` |
+| 回归测试 | 全量测试通过：139/139 | `python -m pytest` |
+
+**当前决策**：
+- 不创建 `configs/production_v2.toml`：Layer 3 盈利折数未达标。
+- 不重启 Phase D：缺历史成分股快照，且行业层策略未达到生产门槛。
+- Prosperity 因子继续保持生产权重 0：宽表质量通过，但缺来源和发布滞后证明。
+
+### 0.0.2 本次推进记录（2026-06-06，第二轮）
+
+| 项目 | 结果 | 产物 |
+|------|------|------|
+| 年度收益工具增强 | 支持多文件对比、分段统计（sw2000/sw2014/sw2021）、--compare 并排比较 | `tools/annual_returns_summary.py` |
+| WF 分段诊断工具 | 读取 `walk_forward_folds.csv`，按 segment 统计盈利折数、per-segment metrics、失败折列表、train→test 退化诊断、生产就绪 verdict | `tools/wf_segment_diagnosis.py` |
+| Phase D 简化版实验 | 仅用流动性过滤（amount_strength），无 vol/mom 股票因子；年化 4.28%, Sharpe 0.32，远弱于 exp_d_best (10.82%)，确认股票 Alpha 因子有意义 | `configs/exp_d_lite.toml`, `reports/exp_d_lite/` |
+| 收窄候选跨段扫参 | 仅 top_k=3,5 + risk_off=0,0.3 + mscore=false,true，8 个候选 × 3 段；最优 `ret60_ret5_top3_riskoff0p3_riskctrl1_mscore0` 年化 7.20% 但 DD -44.17% | `reports/exp_narrow_candidates/` |
+| 窄候选固定配置 | 创建 `narrow_top3_hard.toml`、`narrow_soft30_softmax.toml` 及 sw2000/sw2014 分段变体 | `configs/narrow_*.toml` |
+| 回归测试 | 新增 11 个工具测试，全量 147/147 通过 | `tests/test_tools.py` |
+
+**新增工具使用方式**：
+
+```bash
+# WF 分段诊断（一键看所有 fold 的 segment 分解和失败原因）
+python tools/wf_segment_diagnosis.py reports/exp_full27_best_fixed --all
+
+# 年度收益多文件对比
+python tools/annual_returns_summary.py \
+    reports/real_sw2021/annual_returns.csv \
+    reports/exp_d_lite/annual_returns.csv \
+    --compare reports/exp_d_best/annual_returns.csv --segments
+
+# 数据完整性检查
+python tools/data_integrity_check.py --config configs/real_sw2021.toml
+
+# 风控准确性诊断
+python tools/diagnose_risk_control.py
+```
+
+### 0.0.3 本次推进记录（2026-06-06，第三轮）
+
+| 项目 | 结果 | 产物 |
+|------|------|------|
+| §H.3 H1 防御型单段 WF | 4 折，mean test 年化 7.89%，DD -13.49% | `reports/exp_h1_wf/` |
+| §H.3 H2 均衡型单段 WF | 4 折，mean test 年化 **14.93%**，DD -13.06%，本次最强 | `reports/exp_h2_wf/` |
+| §H.3 H3 进取型单段 WF | 4 折，mean test 年化 12.86%，DD -13.65% | `reports/exp_h3_wf/` |
+| §F.2.3 软仓位扫描 | 48 组合，最优 `ret60_ret5_top5_softoff0p2`：年化 7.29%, Sharpe 0.51 | `reports/exp_f2_soft_exposure/` |
+| §G.2 波动率目标扫描 | vol 0.12/0.15/0.18 三个级别均灾难性失效（年化 -0.04~0.64%，DD -35~-37%）| `configs/exp_g2_vol*.toml`, `reports/exp_g2_vol*/` |
+| Tool 7 因子相关性 | `exp_d_best` 上 4 对高相关（>0.7），`rel_*` 与原始 `ret*` 共线 | `tools/factor_independence.py`（新增 --config 参数） |
+| Tool 8 多策略聚合 | H1(60%)+H2(40%)：年化 2.02%, DD -23.32%，被 H2 拖累 | `reports/combined/combined_equity.csv` |
+| Tool 9 风控精度诊断 | 四段全部 hit_rate<50%（22~38%），market_score 误报率高达 62% | `reports/*/risk_control_accuracy.csv` |
+| **Layer 2 WF**（sw2014+sw2021） | 19 折，mean test 年化 **6.48%**，mean DD **-9.10%**，最优固定候选 `ret60_ret5_top5_riskoff0_modeh_riskctrl1_mscore0`（7/19 折选中）| `reports/exp_l2_wf/` |
+| H1/H2/H3 分年对比 | H1 最稳（最差 -2.2%），H2 最惨（2022-2023 连续 -12~-13%），H3 3 年负收益 FAIL | `tools/annual_returns_summary.py --compare` |
+| 修复 | `combine_strategies.py` 列名兼容（`strategy`/`strategy_equity`）；`factor_independence.py` 支持 `--config` | — |
+| 回归测试 | 全量 147/147 通过 | `python -m pytest` |
+
+**新增关键结论**：
+- **vol_targeting 彻底排除**：三个级别全部导致 -35~-37% DD，年化近乎 0，不可用于生产。
+- **H2 WF 14.93% 的信号需谨慎**：该值来自动态候选选择，固定配置 H2 `run` 仅 -1.48%（2022-2023 连续亏 -12~-13%），意味着 WF 的"聪明选择"高度依赖折内过拟合。
+- **Layer 2 WF 盈利折仅 8/19（42%），中位数 0.00%**：均值 6.48% 由极端压缩贡献（Fold 7+43.5%, Fold 19+77.5%），大多数折（11/19）非正。不推进 Layer 3。
+- **风控 hit_rate 全部 <50%**：四段 22~38%，market_score 误报率高达 62%。风控为净害。
+
+**当前决策**：
+- **vol_targeting 已排除**：三层 vol 全部 DD -35~-37%，年化 ~0%。
+- **Layer 2 未通过**：盈利折 8/19（需 15/27），中位数 0%。不推进 Layer 3。
+- **H1 防御型为最稳定固定候选**：最差年 -2.2%，年化 4.27%（fixed）/ 7.89%（WF）。
+- **H2 均衡型 WF 14.93% 不可用**：固定配置 -1.48%，WF 动态选择来自折内过拟合。
+- **所有实验结论收敛**：A 股行业动量在折级一致性上存在根本性限制（任意 6 个月窗口的正/负极不稳定），继续在该框架内微调参数无法突破。
+
+### 0.0.4 本次推进记录（2026-06-06，第四轮 — plan 清理 + 数据修复）
+
+| 项目 | 结果 | 产物 |
+|------|------|------|
+| plan.md 状态同步 | 修正过期描述：执行快照表、优先级表 I.2、Phase D 条件、prosperity 元数据 | plan.md |
+| stock 数据历史快照重抓 | 用 `--constituent-snapshots` + `stock_industry_map_historical.csv` 重抓 5246 只股票 | ✅ 已完成，stock_manifest.json 确认 current_constituents=false, 173 snapshots |
+| breadth 数据历史快照重算 | 用 `--constituent-snapshots` 重算 industry_breadth*.csv | ✅ 已完成（2026-06-07 本地计算落地，AKShare API 不可用时从本地 stock_close 计算） |
+| valuation manifest 补充 | `compute-valuation` 增加 manifest JSON 输出（来源/滞后元数据） | ✅ 已实现，`industry_valuation_manifest.json` 已生成 |
+
+**当前决策**：
+- SW2021 段历史快照已就绪，stock/breadth 已重抓/重算完毕。
+- Phase D 无偏重跑已执行（2026-06-07），结果见 §0.0.5。
+- sw2000/sw2014 段仍需 JoinQuant/Tushare/vendor 补齐长历史成分股。
+
+### 0.0.5 本次推进记录（2026-06-07，第五轮 — Phase D 无偏重跑 + breadth 落地）
+
+| 项目 | 结果 | 产物 |
+|------|------|------|
+| SW2021 breadth 本地计算 | AKShare API 不可用，改为从本地 stock_close.csv + stock_industry_map.csv 直接计算 industry_breadth20/60 | `data/real_sw2021/industry_breadth20.csv` (1063 天), `industry_breadth60.csv` (1023 天), `breadth_manifest.json` |
+| Phase D 无偏重跑 | 用历史快照数据跑 `configs/exp_d_best.toml`，结果与有偏版本天差地别 | `reports/exp_d_best/`（已覆盖旧结果） |
+| stock_selection.py bug 修复 | `compute_stock_scores` 中 `z_ret20/ret60/vol20/ret5` 改用 `.get(stock, 0.0)`，修复新上市股票无历史数据导致 KeyError | `src/quant_rotation/stock_selection.py:93-103` |
+
+**Phase D 有偏 vs 无偏核心对比**：
+
+| 指标 | 有偏（旧，当前成分股） | 无偏（新，历史快照） | 退化 |
+|------|----------------------|---------------------|------|
+| 年化收益 | **+10.82%** | **-2.87%** | -13.69pp |
+| Sharpe | 0.651 | -0.013 | -0.664 |
+| 最大回撤 | -22.17% | **-49.39%** | -27.22pp |
+| 月胜率 | 34.5% | 27.3% | -7.2pp |
+| 换手率 | — | 0.95 | — |
+| 连续亏损月 | — | 6 | — |
+
+| 年份 | 有偏 | 无偏 | 基准 |
+|------|------|------|------|
+| 2021 | 0.0% | 0.0% | -2.8% |
+| 2022 | 0.0% | 0.0% | -21.6% |
+| 2023 | -1.3% | +26.8% | -11.4% |
+| 2024 | +14.9% | -5.9% | +14.7% |
+| 2025 | +2.3% | **-33.1%** | +17.7% |
+| 2026H1 | +33.5% | +10.7% | +6.1% |
+
+**关键结论**：
+- **前视偏差影响量级 ~13.7pp 年化**：来自 survivorship bias — 用当前成分股选股天然偏向「存活且成功」的股票。
+- 无偏版本 Sharpe < 0、月胜率 27.3%、换手率 0.95 — **Phase D 股票层策略在消除前视偏差后完全失效**，此前的好表现纯属数据偏差。
+- 即使未来补齐 sw2000/sw2014 成分股，也不应对 Phase D 抱期望。
+- `reports/exp_d_best/` 旧有偏结果已被覆盖（仅 plan.md §十五 B 保留了数值记录）。
+
+**当前决策**：
+- **Phase D 正式排除**：在无偏数据上 Sharpe < 0，不进入任何生产候选。
+- **不再推进 Phase D 全段无偏 WF**（即使 sw2000/sw2014 成分股补齐后），因为 SW2021 段已充分证明该策略无效。
+- 剩余唯一阻塞项：sw2000/sw2014 历史成分股（仅影响行业层跨段 WF 的数据质量，非新增实验）。
 
 ---
 
@@ -122,6 +252,38 @@
 - risk_off=0 > risk_off=0.3 > risk_off=0.5（全规避最好）
 - market_score_control=false > true
 - 动态候选选择失效（训练 Sharpe 0.53 → 测试 Sharpe 0.07，严重过拟合）
+
+#### 0.4.3 27 折全段固定候选 WF 补充（sw2000 + sw2014 + sw2021）
+
+本次补跑命令：
+
+```bash
+python -m quant_rotation validate-segments \
+    --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml \
+    --industry-only \
+    --factor-set ret60_ret5 \
+    --top-k 3,5 \
+    --risk-off-exposure 0 \
+    --risk-control true \
+    --market-score-control false \
+    --risk-control-mode hard \
+    --portfolio-mode equal \
+    --output-dir reports/exp_full27_best_fixed
+```
+
+| 指标 | 结果 |
+|------|------|
+| 折数 | 27 |
+| 覆盖区间 | 2010-01-04 ~ 2026-03-05 |
+| 最常被选候选 | `ret60_ret5_top3_riskoff0`（20/27 折） |
+| 测试年化均值 / 中位数 | 8.50% / 0.00% |
+| 测试 Sharpe 均值 / 中位数 | 0.307 / 0.078 |
+| 测试盈利折数 | 13/27（另 2 折为 0，12 折为负） |
+| Bootstrap p_positive（年化均值） | 94.93% |
+| 固定 top3 OOS 净值 | 1.954（vs 基准 1.730，超额 +12.9%；vs 等权 2.464，超额 -20.7%） |
+
+**补充结论**：固定 `top_k=3` 的长期 OOS 净值优于基准，但盈利折数和中位数仍不达标。
+它更像「长期有超额、短期不稳定」的候选，不满足“每折/每年稳定”的生产门槛。
 
 ---
 
@@ -544,10 +706,10 @@ python -m quant_rotation validate \
 
 | 数据 | 当前状态 | 偏差风险 |
 |------|---------|---------|
-| `stock_industry_map.csv` | 静态当前成分股映射 | **高** - 使用了未来才知道的行业归属 |
-| `industry_prosperity.csv` | 来源未记录 | **中** - 如果是月末/季末发布，当日不可用 |
-| `industry_valuation.csv` | 来源未记录 | **中** - PE/PB 数据是否有发布滞后 |
-| `industry_breadth*.csv` | 使用当前成分股计算历史宽度 | **高** - 历史日期的宽度用当前成分股计算 |
+| `stock_industry_map.csv` | SW2021 段已有历史快照（`stock_industry_map_historical.csv`）；sw2000/sw2014 段仍为静态映射 | **高**（sw2000/sw2014 段仍使用未来行业归属） |
+| `industry_prosperity.csv` | 已有 `industry_prosperity_manifest.json`（含 release_lag_days/available_time） | **中** - 实盘可用性待确认 |
+| `industry_valuation.csv` | 已有 `industry_valuation_manifest.json`（含 release_lag_days/available_time） | **中** - PE/PB proxy 为价格分位数，非真实估值数据 |
+| `industry_breadth*.csv` | SW2021 段待用历史快照重算；sw2000/sw2014 段仍为当前成分计算 | **高**（sw2000/sw2014 段） |
 
 ### I.2 前视偏差修复优先级
 
@@ -570,26 +732,40 @@ def fetch_historical_constituent_snapshots(
     """
 ```
 
-**行动项**：验证 AKShare 是否可以查询历史成分股；如不能，Phase D 结果标记为「研究近似」。
+**行动项**：
+- [x] SW2021 段：已通过 `fetch-historical-constituents --source sws` 补齐 5246 只股票的历史快照 CSV。
+- [ ] sw2000/sw2014 段：仍需 JoinQuant / Tushare / vendor interval CSV 补齐长历史成分股。
+  在此之前，Phase D 在 sw2000/sw2014 段只能标记为「当前成分股研究近似」。
+
+**2026-06-06 补充验证**：本地 AKShare 已安装，但
+`ak.index_component_sw` 签名为 `(symbol: str = '801001')`，不支持 `date` 参数；
+执行 `ak.index_component_sw(symbol="801010", date="20220101")` 返回
+`unexpected keyword argument 'date'`。因此 Phase D 股票层在没有外部历史快照 CSV 前，
+必须继续标记为「当前成分股研究近似」，不可作为无偏生产结论。
+
+**2026-06-06 修复落地**：已补齐非 AKShare 路径，不再依赖 AKShare 查询历史成分股。
+
+- `fetch-historical-constituents` 现在支持 `csv-snapshots`、`csv-intervals`、`sws`、`tushare`、`joinquant`。
+- 已验证申万官网 SWS 下载中心：`indextype=一级行业` 可列出 31 个申万一级行业，单行业
+  `download_file/?file_name=<行业名>分类表` 返回含 `行业名称/股票代码/起始时间/结束时间`
+  的 xlsx。已生成 `data/real_sw2021/stock_industry_map_historical.csv`：
+  173 个事件快照日期，824166 行，5246 只股票，覆盖 2021-12-13 ~ 2026-06-03。
+- `fetch-stock-data` 和 `fetch-breadth-data` 已新增 `--constituent-snapshots`，
+  传入快照 CSV 后按点时成分抓股票全集、计算行业宽度；未传时仍保留
+  当前成分研究近似并在 manifest 中写入偏差警告。
+- 生产级长历史可用 `--source joinquant`（`get_history_industry` 的纳入/剔除区间）、
+  `--source tushare`（`index_member_all` 的 `in_date/out_date` 区间）或 vendor
+  `csv-intervals` 补齐。缺 token/账号时命令会失败并明确提示，不再静默退回 AKShare。
 
 #### I.2.2 Prosperity 数据：记录数据来源和发布时间
 
-```python
-# 在 real_data.py 中新增说明文档
-"""
-industry_prosperity.csv 数据来源应满足：
-1. 数据对应日期 T 时，该数据在 T 日收盘前可以获取
-2. 如果数据是月度/季度发布，需要偏移到实际可用日期（发布日+1）
+**2026-06-06 修复落地**：`compute-prosperity` 现已写
+`industry_prosperity_manifest.json`，记录 `source_file`、`method`、`window`、
+`release_lag_days=1`、`available_time=post_close`、`usable_from=next_rebalance`。
+`tools/data_integrity_check.py --production` 会把缺少 prosperity 发布滞后元数据、
+或仍使用当前成分股的 manifest 警告升级为失败。
 
-当前数据来源：[待补充]
-发布延迟：[待验证]
-"""
-```
-
-**行动项（1 天）**：
-1. 检查 `industry_prosperity.csv` 的实际数据来源
-2. 验证历史回测中使用的日期是否已经偏移到数据可用日期
-3. 如有疑问，将 `prosperity_weight` 暂时设为 0，等数据质量确认后再启用
+生产权重仍建议 `prosperity_weight = 0.00`，待实盘可用性确认后再启用。
 
 #### I.2.3 行业宽度数据：前视偏差修复
 
@@ -600,22 +776,25 @@ python -m quant_rotation fetch-breadth-data \
     --start 2021-12-13 \
     --end 2026-06-03 \
     --windows 20,60 \
+    --constituent-snapshots data/real_sw2021/stock_industry_map_historical.csv \
     --request-interval 0.2
-# 注意：当前实现仍使用当前成分股，这是已知偏差
-# 如需修复，需要在 real_data.py 中实现历史成分股查询
+# 未传 --constituent-snapshots 时仍使用当前成分股，仅可作为研究近似
 ```
 
 ### I.3 数据完整性检查脚本
 
-```python
-# tools/data_integrity_check.py（新建）
-"""
-运行一系列数据质量检查：
-1. 前视偏差检查：确认每行数据在当日收盘时是否实际可用
-2. 异常值检查：单日涨跌幅 > 20% 的行业（可能是指数重构）
-3. 缺失值检查：连续缺失日 > 5 天（可能是节假日以外的数据缺口）
-4. 日期对齐检查：各数据文件日期列是否完全一致
-"""
+已实现为 `tools/data_integrity_check.py`，支持 `--config` 指定配置文件，`--jump-threshold` 自定义跳变阈值。
+
+```bash
+# 按 config 运行完整数据完整性检查（覆盖、跳变、缺失、日期对齐、元数据警告）
+python tools/data_integrity_check.py --config configs/real_sw2021.toml
+
+# 对 Phase D 配置检查（含 stock_close/stock_amount/stock_industry_map）
+python tools/data_integrity_check.py --config configs/exp_d_best.toml
+
+# 对所有 segment 配置依次检查
+python tools/data_integrity_check.py --config configs/real_sw2000.toml
+python tools/data_integrity_check.py --config configs/real_sw2014.toml
 ```
 
 ---
@@ -682,49 +861,32 @@ def filter_by_regime(
 
 ### 7.1 当前 Phase D 结论的有效性评估
 
-`exp_d_best` 结果（Sharpe 0.651，年化 10.82%）有以下限制：
+`exp_d_best` 结果（Sharpe 0.651，年化 10.82%）的限制已通过无偏重跑（2026-06-07）得到量化确认：
 
 1. **仅覆盖 sw2021 段（2021-2026）**：样本期太短，约 5 年，WF 折数不足
-2. **静态成分股地图**：2021-2026 期间，行业成分股有变化，使用当前地图有前视偏差
-3. **高换手率**：`average_turnover = 0.85`，实盘摩擦成本远高于 0.1%
+2. **前视偏差已确认并量化**：使用当前成分股 → survivorship bias 贡献 ~13.7pp 年化退化
+3. **无偏版本完全失效**：Sharpe -0.013，月胜率 27.3%，最大回撤 -49.39%，换手率 0.95
 
-### 7.2 Phase D 重启条件
+**2026-06-07 无偏重跑结论**：详见 §0.0.5。Phase D 股票层策略在消除前视偏差后 Sharpe < 0，**正式排除，不进入任何生产候选**。
 
-以下两个条件必须满足才能重启 Phase D：
+### 7.2 Phase D 排除
 
-**条件 1**：验证 AKShare 能否获取历史成分股（至少季度快照）
-```bash
-python -c "
-import akshare as ak
-# 测试是否支持历史成分股查询
-df = ak.index_component_sw(symbol='801010', date='20220101')
-print(df.head())
-"
-```
+**条件 1**（SW2021 段历史快照）：✅ 已完成。stock_close/stock_amount 已重抓，breadth 已本地重算。
 
-**条件 2**：Phase F+G 的仓位稳定化已完成，行业层策略年化 > 12% 且稳定
+**条件 2**（行业层年化 > 12% 且稳定）：❌ 未满足。
 
-只有当行业层已经足够好，股票层才是锦上添花而非主要收益来源。
+**无偏重跑结果**：年化 -2.87%, Sharpe -0.013。策略在无偏数据上完全失效。
 
-### 7.3 Phase D 简化方案（低前视偏差版）
+**决策**：Phase D 正式排除。即使补齐 sw2000/sw2014 成分股后也不推进全段无偏 WF，SW2021 段已充分证明该策略无效。
 
-如果历史成分股不可用，使用以下简化方案：
-- 只用**流动性过滤**代替全量股票选择：在选中行业内，仅交易成交额前 30% 的股票（等权）
-- 这减少了对成分股地图精确度的依赖，同时过滤了流动性极差的标的
+### 7.3 Phase D 无偏重跑（已完成）
 
-```toml
-# Phase D 简化版
-[strategy]
-stock_selection = true
-stock_top_n_per_industry = 10       # 只要前 10，不精选
-stock_min_stocks_per_industry = 5
-stock_max_weight = 0.05             # 分散化
+所有步骤已于 2026-06-07 执行完毕：
 
-[factors]
-stock_amount_strength_weight = 1.00  # 只用流动性过滤
-stock_vol20_weight = 0.00
-stock_ret60_weight = 0.00
-```
+1. ✅ 用 `--constituent-snapshots` 重抓 `stock_close.csv` / `stock_amount.csv`（2026-06-06 完成）
+2. ✅ 用本地数据重算 `industry_breadth*.csv`（2026-06-07 完成，AKShare API 不可用）
+3. ✅ 运行 `python -m quant_rotation run --config configs/exp_d_best.toml`（2026-06-07 完成）
+4. ✅ 对比有偏 vs 无偏差异：前视偏差 ~13.7pp 年化退化（详见 §0.0.5）
 
 ---
 
@@ -784,14 +946,23 @@ strategy_kwargs["defensive_mode"] = strategy_section.get("defensive_mode", False
 configs/candidate_h1_defensive.toml    # 防御型候选（新建）
 configs/candidate_h2_balanced.toml     # 均衡型候选（新建）
 configs/candidate_h3_aggressive.toml   # 进取型候选（新建）
-configs/production_v2.toml             # 基于 H2 的新生产配置（Phase F+G 完成后）
+configs/narrow_top3_hard.toml          # 窄候选：top3 hard mode（新建）
+configs/narrow_top3_sw2014.toml        # 窄候选：sw2014 segment（新建）
+configs/narrow_top3_sw2000.toml        # 窄候选：sw2000 segment（新建）
+configs/narrow_soft30_softmax.toml     # 窄候选：soft30 + softmax（新建）
+configs/exp_d_lite.toml                # Phase D 简化版（低前视偏差）（新建）
+configs/production_v2.toml             # 暂缓：需 Layer 3 达标后再创建
 ```
 
 ### 8.5 新工具脚本
 
 ```
 tools/data_integrity_check.py          # 数据质量检查（新建）
-tools/annual_returns_summary.py        # 年度收益快速汇总（新建）
+tools/annual_returns_summary.py        # 年度收益快速汇总（已增强：多文件对比、分段统计）
+tools/wf_segment_diagnosis.py          # WF 分段诊断：按 segment 统计、失败折定位（新建）
+tools/diagnose_risk_control.py         # 风控准确性诊断（已实现）
+tools/combine_strategies.py            # 多策略聚合（已实现）
+tools/factor_independence.py           # 因子相关性分析（已实现）
 ```
 
 ---
@@ -818,44 +989,36 @@ tools/annual_returns_summary.py        # 年度收益快速汇总（新建）
 
 每个候选配置的验收必须通过分年检查：
 
-```python
-def annual_consistency_check(annual_returns: dict[int, float]) -> dict[str, float]:
-    """
-    检查年度收益一致性。
-    返回：负收益年份数、最差年收益、年化收益均值、中位数
-    """
-    returns = list(annual_returns.values())
-    negative_years = sum(1 for r in returns if r < 0)
-    worst_year = min(returns)
-    mean_return = sum(returns) / len(returns)
-    sorted_r = sorted(returns)
-    median_return = sorted_r[len(sorted_r) // 2]
-    return {
-        "negative_years": negative_years,
-        "worst_year": worst_year,
-        "mean_return": mean_return,
-        "median_return": median_return,
-        "consistency_ratio": (len(returns) - negative_years) / len(returns),
-    }
-```
-
-**集成到 CLI**：
 ```bash
-python -m quant_rotation run --config configs/candidate_h2_balanced.toml \
-    --annual-consistency-check \
-    --output-dir reports/h2_annual_check
+# 单文件年度一致性检查
+python tools/annual_returns_summary.py reports/candidate_h2_balanced/annual_returns.csv
+
+# 多文件并排对比（推荐：快速定位哪个候选在哪些年份有问题）
+python tools/annual_returns_summary.py \
+    --compare \
+    reports/real_sw2021/annual_returns.csv \
+    reports/exp_d_best/annual_returns.csv \
+    reports/exp_d_lite/annual_returns.csv \
+    --segments
+
+# WF 分段诊断（检查每个 segment 的盈利折数和失败 fold 原因）
+python tools/wf_segment_diagnosis.py reports/exp_full27_best_fixed --all
+python tools/wf_segment_diagnosis.py reports/exp_narrow_candidates --all
 ```
 
 ### 9.3 三层验证流程（修订版）
 
 **Layer 1（1 天）**：sw2021 单段运行 + 分年验证
 - 通过：年度负收益 ≤ 1，最差年 ≥ -10%
+- 命令：`python -m quant_rotation run --config configs/<candidate>.toml && python tools/annual_returns_summary.py reports/<candidate>/annual_returns.csv --segments`
 
 **Layer 2（2 天）**：跨段 WF（sw2014 + sw2021 联合）
 - 通过：OOS 盈利折数 ≥ 15/27，OOS Sharpe 中位数 ≥ 0.15
+- 命令：`python -m quant_rotation validate-segments --configs configs/real_sw2014.toml configs/real_sw2021.toml --industry-only --factor-set ret60_ret5 --top-k 3,5 --risk-off-exposure 0 --risk-control true --market-score-control false --output-dir reports/wf_narrow_layer2 && python tools/wf_segment_diagnosis.py reports/wf_narrow_layer2 --all`
 
 **Layer 3（2 天）**：sw2000 + sw2014 + sw2021 全段 WF
 - 通过：OOS 盈利折数 ≥ 19/27，Bootstrap p_positive ≥ 92%
+- 命令：`python -m quant_rotation validate-segments --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml --industry-only --factor-set ret60_ret5 --top-k 3,5 --risk-off-exposure 0 --risk-control true --market-score-control false --output-dir reports/wf_narrow_layer3 && python tools/wf_segment_diagnosis.py reports/wf_narrow_layer3 --all`
 
 ---
 
@@ -866,16 +1029,17 @@ python -m quant_rotation run --config configs/candidate_h2_balanced.toml \
 | 优先级 | 阶段 | 任务 | 预期效果 | 状态 |
 |--------|------|------|---------|------|
 | 🔴 P0 | F.2 | 软仓位 + 底仓 30% | 消除「全空仓」年份 | ✅ 代码+测试完成，实验结论：未超基线 |
-| 🔴 P0 | G.1 | 年度预算控制 | 稳定年度收益上下界 | ✅ 代码+测试完成，实验结论：当前不触发 |
+| 🔴 P0 | G.1 | 年度预算控制 | 稳定年度收益上下界 | ✅ 代码+测试完成，实验结论：当前不触发 |\n| 🔴 P0 | G.2 | 波动率目标仓位 | 自动化仓位管理 | ✅ 实验完成，**已排除**：vol 0.12~0.18 全部 DD -35~-37%，年化 ~0% |
 | 🔴 P0 | H.2 | 精简候选 + 固定选择 | 消除 WF 过拟合 | ✅ 3 个候选配置已创建 |
 | 🟠 P1 | G.2 | 波动率目标仓位 | 自动化仓位管理 | ✅ 代码完成，H2 测试中导致大幅回撤 |
-| 🟠 P1 | H.3 | WF 验证（跨段） | 确认 OOS 鲁棒性 | ✅ 19 折 WF 完成，见 §0.4.2 |
-| 🟠 P1 | I.2 | Prosperity 数据质量确认 | 消除潜在偏差 | ❌ 未做 |
-| 🟠 P1 | I.2 | 历史成分股快照 | 修复 Phase D 前视偏差 | ❌ 未做（依赖 AKShare） |
+| 🟠 P1 | H.3 | WF 验证（跨段 + 单段） | 确认 OOS 鲁棒性 | ✅ 单段 H1/H2/H3 WF 完成（H2 14.93% 最强）；Layer 2 跨段 WF mean test 6.48% |
+| 🟠 P1 | I.2 | Prosperity 数据质量确认 | 消除潜在偏差 | ✅ 宽表质量通过 + `industry_prosperity_manifest.json` 已写（含 release_lag_days / available_time）；生产权重仍建议 0（待实盘可用性确认） |
+| 🟠 P1 | I.2 | 历史成分股快照 | 修复 Phase D 前视偏差 | ✅ SW2021 段：stock/breadth 已重抓重算，Phase D 无偏重跑完成（年化 -2.87%，策略失效）。sw2000/sw2014 段仍需 JoinQuant/Tushare/vendor 补齐（仅影响行业层数据质量，不影响 Phase D 结论） |
 | 🟡 P2 | J.1 | 防御板块过滤 | 降低熊市损失 | ✅ 完成 |
 | 🟡 P2 | J.2 | 相对收益模式 | 熊市中更现实的目标 | ✅ 完成 |
-| 🟡 P2 | J.3 | 多策略聚合 | 更稳定的组合收益 | ✅ 完成（`tools/combine_strategies.py` + CLI `combine` 命令） |
-| 🔮 | D重启 | Phase D 无偏差版本 | +Sharpe 0.10~0.20 | ❌ 条件不满足（基线未超越） |
+| 🟡 P2 | J.3 | 多策略聚合 | 更稳定的组合收益 | ✅ 完成并实测：H1(60%)+H2(40%) 年化 2.02%，被 H2 拖累 |
+| 🟢 P3 | L2 WF | Layer 2 跨段验证（sw2014+sw2021） | 19 折 WF，验证候选跨段鲁棒性 | ✅ 完成：mean test 年化 6.48%, mean DD -9.10%, 7/19 折选 `ret60_ret5_top5_riskoff0_hard` |
+| ❌ | D重启 | Phase D 无偏差版本 | +Sharpe 0.10~0.20 | ❌ **已排除**：无偏重跑 Sharpe -0.013，策略在消除前视偏差后完全失效 |
 
 ### 10.2 执行顺序（最快看到效果的路径）
 
@@ -911,25 +1075,24 @@ Day 6~7：
   - 重点看每折 OOS 的年化收益分布，而非 Sharpe 均值
 
 Day 8：
-  - 数据质量调研（Prosperity 来源、AKShare 历史成分股）
+  - 数据质量调研（Prosperity 来源、历史成分股 — ✅ 已通过 SWS 补齐 SW2021 段）
   - 写 tools/data_integrity_check.py
 
 Day 9~10：
   - Layer 3 全段 WF 验证
-  - 准备生产配置 production_v2.toml
+  - 若 Layer 3 达标，再准备生产配置 production_v2.toml；当前 27 折盈利折数未达标，暂缓
 ```
 
-#### 第 3~4 周：Phase D 条件满足后
+#### 第 3~4 周：Phase D 无偏版本
 
 ```
 Week 3：
-  - 根据 AKShare 调研结果决定是否重启 Phase D
-  - 如果历史成分股可用：按 7.2 重启
-  - 如果不可用：按 7.3 简化方案
+  - 用 --constituent-snapshots 重抓 SW2021 段 stock/breadth 数据
+  - 重跑 Phase D 无偏版本（configs/exp_d_best.toml），对比前视偏差影响
 
 Week 4：
-  - Phase D 新版本 WF 验证
-  - 生产配置最终化
+  - sw2000/sw2014 历史成分股补齐（JoinQuant/Tushare/vendor）
+  - Phase D 全段无偏 WF 验证
 ```
 
 ---
@@ -949,12 +1112,17 @@ Week 4：
 ### Milestone 2（第 2 周末）：WF 稳健性确认
 
 **通过条件**：
-- 27 折 WF OOS 盈利折数 ≥ 19/27 → ❌ **未跑全段 WF（仅 19 折 sw2014+sw2021）**
-- OOS 年化收益中位数 ≥ 3% → ❌ **实际 0.0%**
-- Bootstrap p_positive ≥ 92% → ❌ **实际 71.8%**
-- 候选在全段中无负收益年份超过 2 年 → — 未验证
+- 27 折 WF OOS 盈利折数 ≥ 19/27 → ❌ **第三轮 Layer 2: 8/19（42%）盈利折**
+- OOS 年化收益中位数 ≥ 3% → ❌ **Layer 2 中位数 0.00%（均值 6.48% 被 Fold 7/8/9/19 极端值拉高）**
+- Bootstrap p_positive ≥ 92% → — 未重算，固定候选 OOS 净值 1.68 vs 基准 1.50
+- 候选在全段中无负收益年份超过 2 年 → H1 为 2/6 负收益，最接近达标
 
-**状态：❌ 未通过**
+**Layer 2 逐折详情**（19 折，sw2014+sw2021）：
+- 盈利折：Fold 2(+17.3%), 7(+43.5%), 8(+33.1%), 9(+32.5%), 11(+3.5%), 14(+10.6%), 18(+3.8%), 19(+77.5%) — 共 8 折
+- 零收益：Fold 12, 15 — 共 2 折
+- 亏损折：Fold 1(-8.4%), 3(-3.1%), 4(-11.0%), 5(-18.1%), 6(-6.0%), 10(-16.2%), 13(-10.4%), 16(-15.4%), 17(-10.1%) — 共 9 折
+
+**状态：❌ 未通过**（盈利折数 < 15/19，中位数 0%。均值 6.48% 来自极端压缩——少数大赚折掩盖多数亏损折。Layer 3 不推进。）
 
 ### Milestone 3（第 4 周末）：生产就绪
 
@@ -963,8 +1131,8 @@ Week 4：
 - sw2021 最差单年 ≥ -8% → ❌ 实际 -4.6%（负值但绝对值达标；目标是正数即 >-8%）✅
 - sw2021 负收益年份 ≤ 1 → ✅
 - sw2021 Sharpe ≥ 0.55 → ❌ 实际 0.52
-- 27 折 WF OOS 盈利折数 ≥ 19/27 → ❌ 未跑
-- Bootstrap p_positive ≥ 92% → ❌
+- 27 折 WF OOS 盈利折数 ≥ 19/27 → ❌ 实际 13/27
+- Bootstrap p_positive ≥ 92% → ✅ 固定候选补跑为 94.93%
 
 **状态：❌ 未通过**
 
@@ -976,18 +1144,22 @@ Week 4：
 
 ## 十二、性能基线更新
 
-| 指标 | 旧 plan 基线 | 当前实际（Phase E） | 本轮执行结果（Phase F/G/H） | 新目标 |
-|------|------------|-------------------|--------------------------|--------|
-| sw2021 年化 | 6.51% | 7.29%（Phase E 最优）| **6.51%**（生产基线仍最优）| **≥ 12%** |
-| sw2021 Sharpe | 0.525 | 0.515 | **0.52**（生产基线）| **≥ 0.55** |
-| sw2021 最大回撤 | -17.26% | -24.48% | **-17.3%** | **< -18%** |
-| sw2021 月胜率 | 29.1% | 32.7% | — | **≥ 42%** |
-| 负收益年份数 | 2/6 | 1/6 | **1/6**（2023 -4.6%）| **≤ 1/6** |
-| 最差单年 | -4.6%（2023） | -4.6% | **-4.6%**（未改善）| **≥ -8%** |
-| 19 折 WF OOS 年化中位数 | — | — | **0.0%** | **≥ 3%** |
-| 19 折 WF OOS Sharpe 中位数 | 0.484（旧）→ 0.043（新） | 0.043 | **0.00** | **≥ 0.20** |
-| Bootstrap p_positive | 95.0%（旧）→ 89.3%（新） | 89.3% | **71.8%** | **≥ 92%** |
-| WF OOS 盈利折数 | 16/27 | 未统计 | — | **≥ 19/27** |
+| 指标 | 旧 plan 基线 | 本次实验（第三轮） | 新目标 |
+|------|------------|-------------------|--------|
+| sw2021 年化（基线） | 6.51% | **6.51%**（仍最优）| ≥ 12% |
+| sw2021 年化（H2 固定） | — | **-1.48%**（vol_target 灾难）| — |
+| sw2021 年化（H2 WF 动态） | — | **14.93%**（mean test，仅 4 折）| — |
+| sw2021 Sharpe | 0.52 | **0.52**（基线）/ 0.37（H1）/ -0.02（H2）| ≥ 0.55 |
+| sw2021 最大回撤 | -17.3% | **-17.3%**（基线）/ -40.7%（H2 fix）/ -13.06%（H2 WF）| < -18% |
+| 负收益年份数 | 1/6 | **H1=2, H2=2, H3=3**（固定配置分年）| ≤ 1/6 |
+| 最差单年 | -4.6% | H1 **-2.2%** / H2 **-13.2%** / H3 **-2.3%** | ≥ -8% |
+| H1 WF mean test 年化 | — | **7.89%**（4 折）| — |
+| H2 WF mean test 年化 | — | **14.93%**（4 折，最强）| — |
+| **Layer 2 WF mean test 年化** | 0.0%（上轮） | **6.48%**（19 折） | ≥ 3% |
+| Layer 2 WF mean test DD | — | **-9.10%** | — |
+| Layer 2 最优固定候选 | — | `ret60_ret5_top5_riskoff0_modeh_riskctrl1_mscore0`（7/19 折）| — |
+| Vol targeting 结论 | — | **已排除**：vol 0.12~0.18 DD -35~-37% | — |
+| 风控 hit_rate | — | 四段全部 **<50%**（22~38%）| — |
 
 ---
 
@@ -1037,19 +1209,34 @@ Week 4：
 ```bash
 # 步骤 1: 单段快速验证（5 分钟）
 python -m quant_rotation run --config configs/<new_config>.toml
-# 检查 reports/<dir>/annual_returns.csv 中每年收益
 
-# 步骤 2: 分年一致性检查（新脚本）
-python tools/annual_returns_summary.py reports/<dir>/annual_returns.csv
+# 步骤 2: 分年一致性检查 + 分段统计
+python tools/annual_returns_summary.py reports/<dir>/annual_returns.csv --segments
 
-# 步骤 3: sw2014 段 WF（30 分钟，最重要的泛化测试）
-python -m quant_rotation validate \
-    --config configs/<new_config_sw2014>.toml \
-    --walk-forward --train-window 504 --test-window 126 \
-    --output-dir reports/quick_wf_<name>
+# 步骤 3: 跨段固定候选扫参（30 分钟）
+python -m quant_rotation sweep-segments \
+    --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml \
+    --industry-only \
+    --factor-set ret60_ret5 \
+    --top-k 3,5 \
+    --risk-off-exposure 0,0.3 \
+    --risk-control true \
+    --market-score-control false,true \
+    --risk-control-mode hard \
+    --top-n-equity 5 \
+    --output-dir reports/quick_sweep_<name>
 
-# 步骤 4: 数据质量检查
+# 步骤 4: WF 分段诊断（如果跑了 validate-segments）
+python tools/wf_segment_diagnosis.py reports/<wf_dir> --all
+
+# 步骤 5: 数据质量检查
 python tools/data_integrity_check.py --config configs/<new_config>.toml
+
+# 步骤 6: 风控准确性诊断
+python tools/diagnose_risk_control.py
+
+# 步骤 7: 全量回归测试
+python -m pytest --tb=short -q
 ```
 
 ---
@@ -1076,13 +1263,28 @@ python tools/data_integrity_check.py --config configs/<new_config>.toml
 | 换手率 | 0.85 |
 | 注意 | 使用静态成分股，存在前视偏差 |
 
-### C. sw2021 分年收益（不同配置对比）
+### C. sw2021 分年收益（不同配置对比，含本次新增）
 
-| 年份 | 基准 | 等权 | 当前最优（production） | Phase D best | 目标范围 |
-|------|------|------|---------------------|-------------|---------|
-| 2021 | -2.8% | +0.3% | 0.0%（空仓） | 0.0% | **+1~5%** |
-| 2022 | -21.6% | -15.1% | 0.0%（空仓） | 0.0% | **-5~0%** |
-| 2023 | -11.4% | -6.9% | -4.6% | -1.3% | **-2~+5%** |
-| 2024 | +14.7% | +14.0% | +8.6% | +14.9% | **+8~18%** |
-| 2025 | +17.7% | +28.4% | +18.6% | +2.3% | **+10~25%** |
-| 2026H1 | +6.1% | +1.7% | +6.5% | +33.5% | **+4~15%** |
+| 年份 | 基准 | 等权 | 当前最优（production） | Phase D best | Phase D lite | 目标范围 |
+|------|------|------|---------------------|-------------|-------------|---------|
+| 2021 | -2.8% | +0.3% | 0.0%（空仓） | 0.0% | 0.0% | **+1~5%** |
+| 2022 | -21.6% | -15.1% | 0.0%（空仓） | 0.0% | 0.0% | **-5~0%** |
+| 2023 | -11.4% | -6.9% | -4.6% | -1.3% | +1.6% | **-2~+5%** |
+| 2024 | +14.7% | +14.0% | +8.6% | +14.9% | +6.6% | **+8~18%** |
+| 2025 | +17.7% | +28.4% | +18.6% | +2.3% | +7.7% | **+10~25%** |
+| 2026H1 | +6.1% | +1.7% | +6.5% | +33.5% | +2.5% | **+4~15%** |
+
+**Phase D lite 结论**：简化为仅流动性过滤（top10 stocks/industry, equal-weight）后年化仅 3.0%，远弱于 exp_d_best (10.82%)，确认股票 Alpha 因子（vol20、consistency20）是关键超额来源而非单纯的分散化；但同时确认前视偏差风险仍在，不应直接用于生产。
+
+### D. 收窄候选跨段扫参（exp_narrow_candidates，本次新增）
+
+仅 8 个候选 × 3 段（sw2000+sw2014+sw2021），stitched equity：
+
+| 候选名 | 年化 | Sharpe | Max DD |
+|--------|------|--------|--------|
+| `ret60_ret5_top3_riskoff0p3_riskctrl1_mscore0` | 7.20% | 0.48 | -44.17% |
+| `ret60_ret5_top3_riskoff0p3_riskctrl1_mscore1` | 6.62% | 0.48 | -39.40% |
+| `ret60_ret5_top5_riskoff0p3_riskctrl1_mscore1` | 6.14% | 0.45 | -38.57% |
+| `ret60_ret5_top3_riskoff0_riskctrl1_mscore0` | 5.55% | 0.37 | -33.83% |
+
+**结论**：跨全段（2010-2026）的最大回撤均远超可接受范围（>33%），再次确认当前行业层策略在长历史中存在大幅回撤期，不适合作为单一生产策略。

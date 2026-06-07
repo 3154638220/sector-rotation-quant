@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import calendar
 import csv
+import io
 import json
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
-from .models import PriceData
+from .models import PriceData, StockIndustryMap
 
 
 SW_LEVEL1_INDICES = [
@@ -179,7 +181,7 @@ class IndustryMarketData:
 class StockMarketData:
     close: PriceData
     amount: PriceData | None
-    industry_map: dict[str, str]
+    industry_map: StockIndustryMap | dict[str, str]
 
 
 ProgressCallback = Callable[[str], None]
@@ -565,19 +567,34 @@ def fetch_stock_daily_data(
         raise ValueError("start must be earlier than or equal to end")
 
     ak = ak or _require_akshare()
-    frame = ak.stock_zh_a_hist_tx(
-        symbol=_tx_stock_code(symbol),
-        start_date=compact_date(start),
-        end_date=compact_date(end),
-        adjust=adjust,
-    )
+    if hasattr(ak, "stock_zh_a_hist_tx"):
+        frame = ak.stock_zh_a_hist_tx(
+            symbol=_tx_stock_code(symbol),
+            start_date=compact_date(start),
+            end_date=compact_date(end),
+            adjust=adjust,
+        )
+        date_columns = ("date",)
+        close_columns = ("close",)
+        amount_columns = ("amount",)
+    else:
+        frame = ak.stock_zh_a_hist(
+            symbol=_normalize_stock_code(symbol),
+            period="daily",
+            start_date=compact_date(start),
+            end_date=compact_date(end),
+            adjust=adjust,
+        )
+        date_columns = ("日期", "date")
+        close_columns = ("收盘", "close")
+        amount_columns = ("成交额", "amount")
     closes: dict[date, float] = {}
     amounts: dict[date, float] = {}
     for row in _records(frame):
-        day = _cell_date(_cell(row, "date"))
+        day = _cell_date(_cell(row, *date_columns))
         if start <= day <= end:
-            closes[day] = _cell_float(_cell(row, "close"))
-            raw_amount = _cell(row, "amount")
+            closes[day] = _cell_float(_cell(row, *close_columns))
+            raw_amount = _cell(row, *amount_columns)
             if raw_amount is not None:
                 amounts[day] = _cell_float(raw_amount)
     return closes, amounts
@@ -615,52 +632,75 @@ def _limit_constituents_per_industry(
     }
 
 
-def fetch_sw_level1_stock_data(
-    start: date,
-    end: date,
-    *,
-    ak: Any | None = None,
-    industries: list[IndexInfo] | None = None,
-    adjust: str = "",
-    max_stocks_per_industry: int | None = None,
-    progress: ProgressCallback | None = None,
-    request_interval: float = 0.0,
-) -> StockMarketData:
-    if start > end:
-        raise ValueError("start must be earlier than or equal to end")
+def _stock_map_all_stocks(stock_map: StockIndustryMap | dict[str, str]) -> set[str]:
+    if isinstance(stock_map, StockIndustryMap):
+        return stock_map.all_stocks
+    return set(stock_map)
 
-    ak = ak or _require_akshare()
-    constituents = fetch_sw_level1_constituents(
-        ak=ak,
-        industries=industries,
-        progress=progress,
-        request_interval=request_interval,
-    )
-    constituents = _limit_constituents_per_industry(
-        constituents,
-        max_stocks_per_industry,
-    )
-    stock_industry_map = _stock_map_from_constituents(constituents)
-    all_stocks = sorted(stock_industry_map)
 
-    closes_by_stock: dict[str, dict[date, float]] = {}
-    amounts_by_stock: dict[str, dict[date, float]] = {}
-    for number, stock in enumerate(all_stocks, start=1):
-        if progress:
-            progress(f"Fetching stock {number}/{len(all_stocks)}: {stock}")
-        closes, amounts = fetch_stock_daily_data(
-            stock,
-            start,
-            end,
-            ak=ak,
-            adjust=adjust,
+def _filter_stock_industry_map_to_available_stocks(
+    stock_map: StockIndustryMap | dict[str, str],
+    available_stocks: Iterable[str],
+) -> StockIndustryMap | dict[str, str]:
+    available = set(available_stocks)
+    if isinstance(stock_map, StockIndustryMap):
+        snapshots = {
+            snapshot_date: {
+                stock: industry
+                for stock, industry in mapping.items()
+                if stock in available
+            }
+            for snapshot_date, mapping in stock_map.snapshots.items()
+        }
+        snapshots = {
+            snapshot_date: mapping
+            for snapshot_date, mapping in snapshots.items()
+            if mapping
+        }
+        if not snapshots:
+            raise ValueError("stock industry map has no stocks in stock close data")
+        return StockIndustryMap(snapshots)
+
+    filtered = {
+        stock: industry
+        for stock, industry in stock_map.items()
+        if stock in available
+    }
+    if not filtered:
+        raise ValueError("stock industry map has no stocks in stock close data")
+    return filtered
+
+
+def _limit_stock_industry_map_per_industry(
+    stock_map: StockIndustryMap,
+    max_stocks_per_industry: int | None,
+) -> StockIndustryMap:
+    if max_stocks_per_industry is None:
+        return stock_map
+    if max_stocks_per_industry <= 0:
+        raise ValueError("max_stocks_per_industry must be positive")
+
+    snapshots: dict[date, dict[str, str]] = {}
+    for snapshot_date, mapping in stock_map.snapshots.items():
+        constituents: dict[str, list[str]] = {}
+        for stock, industry in mapping.items():
+            constituents.setdefault(industry, []).append(stock)
+        limited = _limit_constituents_per_industry(
+            {
+                industry: sorted(stocks)
+                for industry, stocks in constituents.items()
+            },
+            max_stocks_per_industry,
         )
-        if closes:
-            closes_by_stock[stock] = closes
-            if amounts:
-                amounts_by_stock[stock] = amounts
-        if request_interval > 0 and number < len(all_stocks):
-            time.sleep(request_interval)
+        snapshots[snapshot_date] = _stock_map_from_constituents(limited)
+    return StockIndustryMap(snapshots)
+
+
+def _build_stock_market_data_from_daily_series(
+    closes_by_stock: dict[str, dict[date, float]],
+    amounts_by_stock: dict[str, dict[date, float]],
+    stock_industry_map: StockIndustryMap | dict[str, str],
+) -> StockMarketData:
     if not closes_by_stock:
         raise ValueError("No stock close data returned")
 
@@ -681,9 +721,7 @@ def fetch_sw_level1_stock_data(
         for day in common_dates:
             if day in values:
                 last_close = values[day]
-                filled[day] = last_close
-            else:
-                filled[day] = last_close
+            filled[day] = last_close
         closes_by_stock[stock] = filled
 
     for stock, values in amounts_by_stock.items():
@@ -724,15 +762,128 @@ def fetch_sw_level1_stock_data(
             for stock, values in closes_by_stock.items()
         },
     )
-    available_map = {
-        stock: industry
-        for stock, industry in stock_industry_map.items()
-        if stock in close_data.closes
-    }
+    available_map = _filter_stock_industry_map_to_available_stocks(
+        stock_industry_map,
+        close_data.closes,
+    )
     return StockMarketData(
         close=close_data,
         amount=amount_data,
         industry_map=available_map,
+    )
+
+
+def fetch_sw_level1_stock_data(
+    start: date,
+    end: date,
+    *,
+    ak: Any | None = None,
+    industries: list[IndexInfo] | None = None,
+    adjust: str = "",
+    max_stocks_per_industry: int | None = None,
+    progress: ProgressCallback | None = None,
+    request_interval: float = 0.0,
+) -> StockMarketData:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+
+    ak = ak or _require_akshare()
+    constituents = fetch_sw_level1_constituents(
+        ak=ak,
+        industries=industries,
+        progress=progress,
+        request_interval=request_interval,
+    )
+    constituents = _limit_constituents_per_industry(
+        constituents,
+        max_stocks_per_industry,
+    )
+    stock_industry_map = _stock_map_from_constituents(constituents)
+    all_stocks = sorted(stock_industry_map)
+
+    closes_by_stock: dict[str, dict[date, float]] = {}
+    amounts_by_stock: dict[str, dict[date, float]] = {}
+    for number, stock in enumerate(all_stocks, start=1):
+        if progress:
+            progress(f"Fetching stock {number}/{len(all_stocks)}: {stock}")
+        try:
+            closes, amounts = fetch_stock_daily_data(
+                stock,
+                start,
+                end,
+                ak=ak,
+                adjust=adjust,
+            )
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            closes = {}
+            amounts = {}
+        if closes:
+            closes_by_stock[stock] = closes
+            if amounts:
+                amounts_by_stock[stock] = amounts
+        if request_interval > 0 and number < len(all_stocks):
+            time.sleep(request_interval)
+    return _build_stock_market_data_from_daily_series(
+        closes_by_stock,
+        amounts_by_stock,
+        stock_industry_map,
+    )
+
+
+def fetch_sw_level1_stock_data_from_snapshot_map(
+    stock_map: StockIndustryMap,
+    start: date,
+    end: date,
+    *,
+    ak: Any | None = None,
+    adjust: str = "",
+    max_stocks_per_industry: int | None = None,
+    progress: ProgressCallback | None = None,
+    request_interval: float = 0.0,
+) -> StockMarketData:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+
+    ak = ak or _require_akshare()
+    resolved_map = _limit_stock_industry_map_per_industry(
+        stock_map,
+        max_stocks_per_industry,
+    )
+    all_stocks = sorted(resolved_map.all_stocks)
+    if not all_stocks:
+        raise ValueError("historical stock map contains no stocks")
+
+    closes_by_stock: dict[str, dict[date, float]] = {}
+    amounts_by_stock: dict[str, dict[date, float]] = {}
+    for number, stock in enumerate(all_stocks, start=1):
+        if progress:
+            progress(f"Fetching historical-map stock {number}/{len(all_stocks)}: {stock}")
+        try:
+            closes, amounts = fetch_stock_daily_data(
+                stock,
+                start,
+                end,
+                ak=ak,
+                adjust=adjust,
+            )
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            closes = {}
+            amounts = {}
+        if closes:
+            closes_by_stock[stock] = closes
+            if amounts:
+                amounts_by_stock[stock] = amounts
+        if request_interval > 0 and number < len(all_stocks):
+            time.sleep(request_interval)
+
+    return _build_stock_market_data_from_daily_series(
+        closes_by_stock,
+        amounts_by_stock,
+        resolved_map,
     )
 
 
@@ -809,6 +960,109 @@ def compute_industry_breadth(
     return result
 
 
+def compute_historical_industry_breadth(
+    stock_map: StockIndustryMap,
+    stock_closes: dict[str, dict[date, float]],
+    start: date,
+    end: date,
+    *,
+    windows: tuple[int, ...] = (20, 60),
+    min_stocks: int = 1,
+) -> dict[int, PriceData]:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+    if not stock_closes:
+        raise ValueError("stock_closes must not be empty")
+    if not windows:
+        raise ValueError("windows must contain at least one value")
+    if any(window <= 0 for window in windows):
+        raise ValueError("breadth windows must be positive")
+    if min_stocks <= 0:
+        raise ValueError("min_stocks must be positive")
+
+    sorted_windows = tuple(sorted(dict.fromkeys(windows)))
+    industries = sorted(
+        {
+            industry
+            for mapping in stock_map.snapshots.values()
+            for industry in mapping.values()
+        }
+    )
+    if not industries:
+        raise ValueError("stock_map must contain at least one industry")
+
+    above_by_window_stock: dict[int, dict[str, dict[date, bool]]] = {
+        window: {} for window in sorted_windows
+    }
+    candidate_dates: set[date] = set()
+    for stock, series in stock_closes.items():
+        if not series:
+            continue
+        ordered = sorted(series.items(), key=lambda item: item[0])
+        for window in sorted_windows:
+            signals: dict[date, bool] = {}
+            for index, (day, close) in enumerate(ordered):
+                if day < start or day > end or index + 1 < window:
+                    continue
+                trailing = [
+                    value
+                    for _, value in ordered[index + 1 - window : index + 1]
+                ]
+                moving_average = sum(trailing) / window
+                signals[day] = close > moving_average
+                candidate_dates.add(day)
+            if signals:
+                above_by_window_stock[window][stock] = signals
+
+    values_by_window: dict[int, dict[str, dict[date, float]]] = {
+        window: {industry: {} for industry in industries}
+        for window in sorted_windows
+    }
+    for day in sorted(candidate_dates):
+        mapping = stock_map.get_map_at(day)
+        for window in sorted_windows:
+            above_counts: dict[str, int] = {industry: 0 for industry in industries}
+            eligible_counts: dict[str, int] = {industry: 0 for industry in industries}
+            stock_signals = above_by_window_stock[window]
+            for stock, industry in mapping.items():
+                signal = stock_signals.get(stock, {}).get(day)
+                if signal is None:
+                    continue
+                eligible_counts[industry] = eligible_counts.get(industry, 0) + 1
+                if signal:
+                    above_counts[industry] = above_counts.get(industry, 0) + 1
+
+            for industry, eligible in eligible_counts.items():
+                if eligible >= min_stocks:
+                    values_by_window[window][industry][day] = (
+                        above_counts.get(industry, 0) / eligible
+                    )
+
+    result: dict[int, PriceData] = {}
+    for window, values_by_industry in values_by_window.items():
+        empty_industries = [
+            industry
+            for industry, values in values_by_industry.items()
+            if not values
+        ]
+        if empty_industries:
+            preview = ", ".join(empty_industries[:5])
+            raise ValueError(
+                f"No historical breadth values for MA{window}: {preview}"
+            )
+        common_dates = sorted(
+            set.intersection(*(set(values) for values in values_by_industry.values()))
+        )
+        if not common_dates:
+            raise ValueError(f"No common historical breadth dates found for MA{window}")
+        closes = {
+            industry: [values[day] for day in common_dates]
+            for industry, values in values_by_industry.items()
+        }
+        result[window] = PriceData(dates=common_dates, closes=closes)
+    return result
+
+
 def build_constituents_from_snapshot(
     stock_map: StockIndustryMap,
     signal_date: date,
@@ -870,6 +1124,66 @@ def fetch_sw_level1_breadth_data(
 
     return compute_industry_breadth(
         constituents,
+        stock_closes,
+        start,
+        end,
+        windows=resolved_windows,
+        min_stocks=min_stocks,
+    )
+
+
+def fetch_sw_level1_breadth_data_from_snapshot_map(
+    stock_map: StockIndustryMap,
+    start: date,
+    end: date,
+    *,
+    ak: Any | None = None,
+    windows: tuple[int, ...] = (20, 60),
+    min_stocks: int = 1,
+    adjust: str = "",
+    lookback_days: int | None = None,
+    max_stocks_per_industry: int | None = None,
+    progress: ProgressCallback | None = None,
+    request_interval: float = 0.0,
+) -> dict[int, PriceData]:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+    if not windows:
+        raise ValueError("windows must contain at least one value")
+
+    ak = ak or _require_akshare()
+    resolved_windows = tuple(sorted(dict.fromkeys(windows)))
+    history_start = start - timedelta(
+        days=lookback_days if lookback_days is not None else max(resolved_windows) * 3
+    )
+    resolved_map = _limit_stock_industry_map_per_industry(
+        stock_map,
+        max_stocks_per_industry,
+    )
+    all_stocks = sorted(resolved_map.all_stocks)
+    if not all_stocks:
+        raise ValueError("historical stock map contains no stocks")
+
+    stock_closes: dict[str, dict[date, float]] = {}
+    for number, stock in enumerate(all_stocks, start=1):
+        if progress:
+            progress(f"Fetching historical-map stock {number}/{len(all_stocks)}: {stock}")
+        closes = fetch_stock_close_data(
+            stock,
+            history_start,
+            end,
+            ak=ak,
+            adjust=adjust,
+        )
+        if closes:
+            stock_closes[stock] = closes
+        if request_interval > 0 and number < len(all_stocks):
+            time.sleep(request_interval)
+    if not stock_closes:
+        raise ValueError("No constituent stock close data returned")
+
+    return compute_historical_industry_breadth(
+        resolved_map,
         stock_closes,
         start,
         end,
@@ -966,12 +1280,49 @@ def _write_breadth(path: Path, data: PriceData) -> None:
             )
 
 
-def _write_stock_industry_map(path: Path, stock_industry_map: dict[str, str]) -> None:
+def _write_stock_industry_map(
+    path: Path,
+    stock_industry_map: StockIndustryMap | dict[str, str],
+) -> None:
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["stock", "industry"])
-        for stock, industry in sorted(stock_industry_map.items()):
-            writer.writerow([stock, industry])
+        if isinstance(stock_industry_map, StockIndustryMap):
+            writer.writerow(["snapshot_date", "stock", "industry"])
+            for snapshot_date in sorted(stock_industry_map.snapshots):
+                mapping = stock_industry_map.snapshots[snapshot_date]
+                for stock, industry in sorted(mapping.items()):
+                    writer.writerow([snapshot_date.isoformat(), stock, industry])
+        else:
+            writer.writerow(["stock", "industry"])
+            for stock, industry in sorted(stock_industry_map.items()):
+                writer.writerow([stock, industry])
+
+
+def _stock_industry_map_industry_count(
+    stock_industry_map: StockIndustryMap | dict[str, str],
+) -> int:
+    if isinstance(stock_industry_map, StockIndustryMap):
+        return len(
+            {
+                industry
+                for mapping in stock_industry_map.snapshots.values()
+                for industry in mapping.values()
+            }
+        )
+    return len(set(stock_industry_map.values()))
+
+
+def _stock_industry_map_manifest_fields(
+    stock_industry_map: StockIndustryMap | dict[str, str],
+) -> dict[str, Any]:
+    if not isinstance(stock_industry_map, StockIndustryMap):
+        return {}
+    snapshot_dates = sorted(stock_industry_map.snapshots)
+    return {
+        "snapshot_count": len(snapshot_dates),
+        "snapshot_start": snapshot_dates[0].isoformat(),
+        "snapshot_end": snapshot_dates[-1].isoformat(),
+    }
 
 
 def _slice_price_data(data: PriceData, dates: list[date]) -> PriceData:
@@ -1153,6 +1504,7 @@ def write_breadth_data_files(
     min_stocks: int,
     provider: str = "akshare",
     current_constituents: bool = True,
+    constituent_snapshots: StockIndustryMap | None = None,
 ) -> BreadthDataSummary:
     if not breadth_by_window:
         raise ValueError("breadth_by_window must not be empty")
@@ -1181,13 +1533,12 @@ def write_breadth_data_files(
     manifest_path = output_path / "breadth_manifest.json"
     manifest = {
         "provider": provider,
-        "industry_source": "sw_level1_current_constituents",
-        "current_constituents": current_constituents,
-        "survivor_bias_warning": (
-            "Breadth was computed from current SW index constituents. "
-            "Use historical constituent snapshots before treating this as "
-            "unbiased production research data."
+        "industry_source": (
+            "sw_level1_current_constituents"
+            if current_constituents
+            else "sw_level1_historical_constituent_snapshots"
         ),
+        "current_constituents": current_constituents,
         "start": common_dates[0].isoformat(),
         "end": common_dates[-1].isoformat(),
         "rows": len(common_dates),
@@ -1197,6 +1548,14 @@ def write_breadth_data_files(
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "files": {f"industry_breadth{window}": paths[window].name for window in windows},
     }
+    if current_constituents:
+        manifest["survivor_bias_warning"] = (
+            "Breadth was computed from current SW index constituents. "
+            "Use historical constituent snapshots before treating this as "
+            "unbiased production research data."
+        )
+    if constituent_snapshots is not None:
+        manifest.update(_stock_industry_map_manifest_fields(constituent_snapshots))
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
 
@@ -1225,7 +1584,7 @@ def write_stock_data_files(
     amount_data = stock_data.amount
     if amount_data is not None and amount_data.assets != close_data.assets:
         raise ValueError("Stock amount data assets must match stock close data assets")
-    if not stock_data.industry_map:
+    if not _stock_map_all_stocks(stock_data.industry_map):
         raise ValueError("stock industry map must not be empty")
 
     common_dates = set(close_data.dates)
@@ -1243,13 +1602,10 @@ def write_stock_data_files(
         if amount_data is not None
         else None
     )
-    available_map = {
-        stock: industry
-        for stock, industry in stock_data.industry_map.items()
-        if stock in aligned_close_data.closes
-    }
-    if not available_map:
-        raise ValueError("stock industry map has no stocks in stock close data")
+    available_map = _filter_stock_industry_map_to_available_stocks(
+        stock_data.industry_map,
+        aligned_close_data.closes,
+    )
 
     stock_close_path = output_path / "stock_close.csv"
     stock_amount_path = output_path / "stock_amount.csv" if aligned_amount_data else None
@@ -1263,18 +1619,17 @@ def write_stock_data_files(
 
     manifest = {
         "provider": provider,
-        "stock_source": "sw_level1_current_constituents",
-        "current_constituents": current_constituents,
-        "survivor_bias_warning": (
-            "Stock data and stock_industry_map were built from current SW "
-            "constituents. Use historical constituent snapshots before treating "
-            "this as unbiased production research data."
+        "stock_source": (
+            "sw_level1_current_constituents"
+            if current_constituents
+            else "sw_level1_historical_constituent_snapshots"
         ),
+        "current_constituents": current_constituents,
         "start": sorted_dates[0].isoformat(),
         "end": sorted_dates[-1].isoformat(),
         "rows": len(sorted_dates),
         "stocks": len(aligned_close_data.assets),
-        "industries": len(set(available_map.values())),
+        "industries": _stock_industry_map_industry_count(available_map),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "files": {
             "stock_close": stock_close_path.name,
@@ -1282,6 +1637,13 @@ def write_stock_data_files(
             "stock_industry_map": stock_industry_map_path.name,
         },
     }
+    if current_constituents:
+        manifest["survivor_bias_warning"] = (
+            "Stock data and stock_industry_map were built from current SW "
+            "constituents. Use historical constituent snapshots before treating "
+            "this as unbiased production research data."
+        )
+    manifest.update(_stock_industry_map_manifest_fields(available_map))
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
 
@@ -1295,7 +1657,7 @@ def write_stock_data_files(
         end=sorted_dates[-1],
         rows=len(sorted_dates),
         stocks=len(aligned_close_data.assets),
-        industries=len(set(available_map.values())),
+        industries=_stock_industry_map_industry_count(available_map),
         current_constituents=current_constituents,
     )
 
@@ -1306,30 +1668,51 @@ def fetch_and_write_breadth_data(
     end: date,
     *,
     industries: list[IndexInfo] | None = None,
+    constituent_snapshots: StockIndustryMap | None = None,
     windows: tuple[int, ...] = (20, 60),
     min_stocks: int = 1,
     adjust: str = "",
     lookback_days: int | None = None,
+    max_stocks_per_industry: int | None = None,
     progress: ProgressCallback | None = None,
     request_interval: float = 0.0,
 ) -> BreadthDataSummary:
     ak = _require_akshare()
-    breadth_by_window = fetch_sw_level1_breadth_data(
-        start,
-        end,
-        ak=ak,
-        industries=industries,
-        windows=windows,
-        min_stocks=min_stocks,
-        adjust=adjust,
-        lookback_days=lookback_days,
-        progress=progress,
-        request_interval=request_interval,
-    )
+    if constituent_snapshots is None:
+        breadth_by_window = fetch_sw_level1_breadth_data(
+            start,
+            end,
+            ak=ak,
+            industries=industries,
+            windows=windows,
+            min_stocks=min_stocks,
+            adjust=adjust,
+            lookback_days=lookback_days,
+            progress=progress,
+            request_interval=request_interval,
+        )
+        current_constituents = True
+    else:
+        breadth_by_window = fetch_sw_level1_breadth_data_from_snapshot_map(
+            constituent_snapshots,
+            start,
+            end,
+            ak=ak,
+            windows=windows,
+            min_stocks=min_stocks,
+            adjust=adjust,
+            lookback_days=lookback_days,
+            max_stocks_per_industry=max_stocks_per_industry,
+            progress=progress,
+            request_interval=request_interval,
+        )
+        current_constituents = False
     return write_breadth_data_files(
         output_dir,
         breadth_by_window,
         min_stocks=min_stocks,
+        current_constituents=current_constituents,
+        constituent_snapshots=constituent_snapshots,
     )
 
 
@@ -1339,23 +1722,42 @@ def fetch_and_write_stock_data(
     end: date,
     *,
     industries: list[IndexInfo] | None = None,
+    constituent_snapshots: StockIndustryMap | None = None,
     adjust: str = "",
     max_stocks_per_industry: int | None = None,
     progress: ProgressCallback | None = None,
     request_interval: float = 0.0,
 ) -> StockDataSummary:
     ak = _require_akshare()
-    stock_data = fetch_sw_level1_stock_data(
-        start,
-        end,
-        ak=ak,
-        industries=industries,
-        adjust=adjust,
-        max_stocks_per_industry=max_stocks_per_industry,
-        progress=progress,
-        request_interval=request_interval,
+    if constituent_snapshots is None:
+        stock_data = fetch_sw_level1_stock_data(
+            start,
+            end,
+            ak=ak,
+            industries=industries,
+            adjust=adjust,
+            max_stocks_per_industry=max_stocks_per_industry,
+            progress=progress,
+            request_interval=request_interval,
+        )
+        current_constituents = True
+    else:
+        stock_data = fetch_sw_level1_stock_data_from_snapshot_map(
+            constituent_snapshots,
+            start,
+            end,
+            ak=ak,
+            adjust=adjust,
+            max_stocks_per_industry=max_stocks_per_industry,
+            progress=progress,
+            request_interval=request_interval,
+        )
+        current_constituents = False
+    return write_stock_data_files(
+        output_dir,
+        stock_data,
+        current_constituents=current_constituents,
     )
-    return write_stock_data_files(output_dir, stock_data)
 
 
 def fetch_and_write_real_data(
@@ -1469,6 +1871,411 @@ def compute_industry_amount_zscore(
         result_closes[asset] = z_series
 
     return PriceData(dates=amount_data.dates, closes=result_closes)
+
+
+def _require_requests() -> Any:
+    try:
+        import requests
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "requests is required for web data sources. Install it with "
+            "`python -m pip install requests`."
+        ) from exc
+    return requests
+
+
+def _require_pandas() -> Any:
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "pandas is required to read downloaded constituent spreadsheets. "
+            "Install it with `python -m pip install pandas openpyxl`."
+        ) from exc
+    return pd
+
+
+def _coerce_interval_date(value: Any, *, allow_empty: bool = False) -> date | None:
+    if value is None:
+        if allow_empty:
+            return None
+        raise ValueError("empty date")
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, float) and value != value:
+        if allow_empty:
+            return None
+        raise ValueError("empty date")
+
+    raw = str(value).strip()
+    if not raw or raw.lower() in {"nan", "nat", "none", "null"}:
+        if allow_empty:
+            return None
+        raise ValueError("empty date")
+    raw = raw.replace("/", "-")
+    if " " in raw:
+        raw = raw.split(" ", 1)[0]
+    if "T" in raw:
+        raw = raw.split("T", 1)[0]
+    if len(raw) == 8 and raw.isdigit():
+        return parse_date(raw)
+    return date.fromisoformat(raw)
+
+
+def _interval_cell(row: dict[str, Any], aliases: tuple[str, ...]) -> Any:
+    for alias in aliases:
+        if alias in row:
+            return row[alias]
+    return None
+
+
+def _normalize_constituent_interval_row(row: dict[str, Any]) -> dict[str, Any]:
+    stock = _normalize_stock_code(
+        _interval_cell(
+            row,
+            (
+                "stock",
+                "symbol",
+                "ts_code",
+                "con_code",
+                "证券代码",
+                "股票代码",
+                "成分券代码",
+            ),
+        )
+    )
+    industry = str(
+        _interval_cell(
+            row,
+            (
+                "industry",
+                "industry_name",
+                "l1_name",
+                "name",
+                "行业名称",
+                "一级行业",
+            ),
+        )
+        or ""
+    ).strip()
+    start_value = _interval_cell(
+        row,
+        (
+            "start_date",
+            "in_date",
+            "start",
+            "from",
+            "起始日期",
+            "起始时间",
+            "纳入日期",
+        ),
+    )
+    end_value = _interval_cell(
+        row,
+        (
+            "end_date",
+            "out_date",
+            "end",
+            "to",
+            "结束日期",
+            "结束时间",
+            "剔除日期",
+        ),
+    )
+    if not stock:
+        raise ValueError("interval row missing stock")
+    if not industry:
+        raise ValueError(f"interval row missing industry for {stock}")
+    return {
+        "stock": stock,
+        "industry": industry,
+        "start_date": _coerce_interval_date(start_value),
+        "end_date": _coerce_interval_date(end_value, allow_empty=True),
+    }
+
+
+def read_constituent_interval_csv(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        raise FileNotFoundError(f"Constituent interval CSV not found: {path}")
+    intervals: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError(f"{path} must contain a header row")
+        for row_number, row in enumerate(reader, start=2):
+            try:
+                intervals.append(_normalize_constituent_interval_row(row))
+            except ValueError as exc:
+                raise ValueError(f"{path}:{row_number}: {exc}") from exc
+    if not intervals:
+        raise ValueError(f"{path} must contain at least one interval row")
+    return intervals
+
+
+def _month_end_dates(start: date, end: date, *, quarter_only: bool = False) -> list[date]:
+    current = date(start.year, start.month, 1)
+    dates: list[date] = []
+    while current <= end:
+        if not quarter_only or current.month in {3, 6, 9, 12}:
+            last_day = calendar.monthrange(current.year, current.month)[1]
+            candidate = date(current.year, current.month, last_day)
+            if start <= candidate <= end:
+                dates.append(candidate)
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
+    return dates
+
+
+def _snapshot_dates_from_intervals(
+    intervals: list[dict[str, Any]],
+    start: date,
+    end: date,
+    frequency: str,
+) -> list[date]:
+    if frequency == "daily":
+        days = (end - start).days
+        return [start + timedelta(days=offset) for offset in range(days + 1)]
+    if frequency == "month-end":
+        return sorted({start, end, *_month_end_dates(start, end)})
+    if frequency == "quarter-end":
+        return sorted({start, end, *_month_end_dates(start, end, quarter_only=True)})
+    if frequency != "event":
+        raise ValueError(
+            "snapshot_frequency must be one of: event, daily, month-end, quarter-end"
+        )
+
+    dates = {start, end}
+    for interval in intervals:
+        in_date = interval["start_date"]
+        out_date = interval.get("end_date")
+        if in_date <= end and (out_date is None or out_date >= start):
+            dates.add(max(in_date, start))
+            if out_date is not None and out_date < end:
+                dates.add(out_date + timedelta(days=1))
+    return sorted(day for day in dates if start <= day <= end)
+
+
+def build_constituent_snapshots_from_intervals(
+    intervals: list[dict[str, Any]],
+    start: date,
+    end: date,
+    *,
+    snapshot_frequency: str = "event",
+) -> StockIndustryMap:
+    if start > end:
+        raise ValueError("start must be earlier than or equal to end")
+    normalized = [_normalize_constituent_interval_row(row) for row in intervals]
+    snapshot_dates = _snapshot_dates_from_intervals(
+        normalized,
+        start,
+        end,
+        snapshot_frequency,
+    )
+    snapshots: dict[date, dict[str, str]] = {}
+    for snapshot_date in snapshot_dates:
+        mapping: dict[str, str] = {}
+        for row in normalized:
+            in_date = row["start_date"]
+            out_date = row.get("end_date")
+            if in_date <= snapshot_date and (
+                out_date is None or snapshot_date <= out_date
+            ):
+                stock = row["stock"]
+                industry = row["industry"]
+                previous = mapping.get(stock)
+                if previous is not None and previous != industry:
+                    raise ValueError(
+                        f"Stock {stock} appears in multiple active industries "
+                        f"on {snapshot_date}: {previous}, {industry}"
+                    )
+                mapping[stock] = industry
+        if mapping:
+            snapshots[snapshot_date] = mapping
+
+    if not snapshots:
+        raise ValueError("No active constituents found in requested date range")
+    return StockIndustryMap(snapshots)
+
+
+def write_constituent_snapshot_csv(
+    stock_map: StockIndustryMap,
+    output_csv: Path,
+    *,
+    overwrite: bool = False,
+) -> int:
+    if output_csv.exists() and not overwrite:
+        raise FileExistsError(
+            f"Target already exists: {output_csv}. Use --overwrite to replace."
+        )
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    _write_stock_industry_map(output_csv, stock_map)
+    return sum(len(mapping) for mapping in stock_map.snapshots.values())
+
+
+def fetch_sws_level1_constituent_intervals(
+    *,
+    industries: list[str] | None = None,
+    verify_ssl: bool = True,
+    request_interval: float = 0.0,
+    progress: ProgressCallback | None = None,
+) -> list[dict[str, Any]]:
+    requests = _require_requests()
+    pd = _require_pandas()
+    if not verify_ssl:
+        try:
+            import urllib3
+
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except ModuleNotFoundError:
+            pass
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": (
+            "https://www.swsresearch.com/institute_sw/allIndex/"
+            "downloadCenter/industryType"
+        ),
+    }
+    list_url = (
+        "https://www.swsresearch.com/institute-sw/api/"
+        "download_center/trade_classification/"
+    )
+    response = requests.get(
+        list_url,
+        params={"page": 1, "page_size": 200, "indextype": "一级行业"},
+        headers=headers,
+        timeout=30,
+        verify=verify_ssl,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    results = payload.get("data", {}).get("results", [])
+    names = [str(item.get("swindexname") or "").strip() for item in results]
+    names = [name for name in names if name]
+    if industries is not None:
+        requested = set(industries)
+        names = [name for name in names if name in requested]
+        missing = requested - set(names)
+        if missing:
+            raise ValueError(
+                "SWS did not return requested industries: "
+                + ", ".join(sorted(missing))
+            )
+    if not names:
+        raise ValueError("No SWS level-1 industries returned")
+
+    download_url = (
+        "https://www.swsresearch.com/institute-sw/api/"
+        "download_center/download_file/"
+    )
+    intervals: list[dict[str, Any]] = []
+    for number, industry in enumerate(names, start=1):
+        if progress:
+            progress(f"Fetching SWS classification {number}/{len(names)}: {industry}")
+        file_response = requests.get(
+            download_url,
+            params={"file_name": f"{industry}分类表"},
+            headers=headers,
+            timeout=60,
+            verify=verify_ssl,
+        )
+        file_response.raise_for_status()
+        frame = pd.read_excel(io.BytesIO(file_response.content))
+        for row in frame.to_dict("records"):
+            intervals.append(_normalize_constituent_interval_row(row))
+        if request_interval > 0 and number < len(names):
+            time.sleep(request_interval)
+
+    if not intervals:
+        raise ValueError("No SWS constituent intervals downloaded")
+    return intervals
+
+
+def fetch_tushare_sw_level1_constituent_intervals(
+    *,
+    token: str,
+    src: str = "SW2021",
+    progress: ProgressCallback | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        import tushare as ts
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "tushare is required for --source tushare. Install it with "
+            "`python -m pip install tushare`."
+        ) from exc
+
+    pro = ts.pro_api(token)
+    classify = pro.index_classify(src=src, level="L1")
+    intervals: list[dict[str, Any]] = []
+    rows = _records(classify)
+    if not rows:
+        raise ValueError(f"Tushare returned no SW level-1 classifications for {src}")
+    for number, row in enumerate(rows, start=1):
+        l1_code = str(
+            _cell(row, "index_code", "l1_code", "industry_code", "code") or ""
+        ).strip()
+        l1_name = str(
+            _cell(row, "industry_name", "l1_name", "name") or l1_code
+        ).strip()
+        if not l1_code:
+            continue
+        if progress:
+            progress(f"Fetching Tushare SW member {number}/{len(rows)}: {l1_name}")
+        members = pro.index_member_all(l1_code=l1_code)
+        for member in _records(members):
+            item = {
+                "stock": _cell(member, "ts_code", "con_code", "stock"),
+                "industry": _cell(member, "l1_name", "industry_name") or l1_name,
+                "start_date": _cell(member, "in_date", "start_date"),
+                "end_date": _cell(member, "out_date", "end_date"),
+            }
+            intervals.append(_normalize_constituent_interval_row(item))
+    if not intervals:
+        raise ValueError("Tushare returned no constituent intervals")
+    return intervals
+
+
+def fetch_joinquant_sw_level1_constituent_intervals(
+    *,
+    username: str,
+    password: str,
+    name: str = "sw_l1",
+    progress: ProgressCallback | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        import jqdatasdk as jq
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "jqdatasdk is required for --source joinquant. Install it with "
+            "`python -m pip install jqdatasdk`."
+        ) from exc
+
+    jq.auth(username, password)
+    industries_frame = jq.get_industries(name=name)
+    industry_name_by_code = {
+        str(index): str(row.get("name") or index)
+        for index, row in industries_frame.iterrows()
+    }
+    if progress:
+        progress(f"Fetching JoinQuant industry history: {name}")
+    history = jq.get_history_industry(name=name)
+    intervals: list[dict[str, Any]] = []
+    for row in history.to_dict("records"):
+        industry_code = str(_cell(row, "code", "industry_code") or "").strip()
+        item = {
+            "stock": _cell(row, "stock", "security", "securities"),
+            "industry": industry_name_by_code.get(industry_code, industry_code),
+            "start_date": _cell(row, "start_date", "in_date"),
+            "end_date": _cell(row, "end_date", "out_date"),
+        }
+        intervals.append(_normalize_constituent_interval_row(item))
+    if not intervals:
+        raise ValueError("JoinQuant returned no constituent intervals")
+    return intervals
 
 
 def validate_constituent_snapshot_csv(path: Path) -> list[str]:
@@ -1607,4 +2414,3 @@ def compute_industry_valuation_proxy(
         result_closes[asset] = percentiles
 
     return PriceData(dates=close_data.dates, closes=result_closes)
-

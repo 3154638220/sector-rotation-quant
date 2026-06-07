@@ -92,11 +92,11 @@ def compute_stock_scores(
 
     return {
         stock: (
-            config.ret20 * z_ret20[stock]
-            + config.ret60 * z_ret60[stock]
+            config.ret20 * z_ret20.get(stock, 0.0)
+            + config.ret60 * z_ret60.get(stock, 0.0)
             + config.amount_strength * z_amount_strength.get(stock, 0.0)
-            + config.vol20 * z_vol20[stock]
-            + config.ret5 * z_ret5[stock]
+            + config.vol20 * z_vol20.get(stock, 0.0)
+            + config.ret5 * z_ret5.get(stock, 0.0)
             + config.rel_ret60 * z_rel_ret60.get(stock, 0.0)
             + config.consistency20 * z_consistency20.get(stock, 0.0)
         )

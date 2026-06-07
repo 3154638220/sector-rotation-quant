@@ -1,0 +1,19 @@
+{
+  "provider": "local",
+  "industry_source": "sw_level1_historical_constituent_snapshots",
+  "current_constituents": false,
+  "start": "2022-03-14",
+  "end": "2026-06-03",
+  "rows": 1023,
+  "industries": 31,
+  "windows": [
+    20,
+    60
+  ],
+  "generated_at": "2026-06-07T17:27:56",
+  "files": {
+    "industry_breadth20": "industry_breadth20.csv",
+    "industry_breadth60": "industry_breadth60.csv"
+  },
+  "source": "computed locally from stock_close.csv with historical constituent snapshots"
+}

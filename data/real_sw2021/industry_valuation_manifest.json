@@ -1,0 +1,18 @@
+{
+  "provider": "derived",
+  "source_file": "D:\\Projects\\quant\\data\\real_sw2021\\industry_close.csv",
+  "source_factor": "industry_close",
+  "method": "rolling_price_percentile",
+  "window": 252,
+  "release_lag_days": 1,
+  "available_time": "post_close",
+  "usable_from": "next_rebalance",
+  "start": "2021-12-13",
+  "end": "2026-06-02",
+  "rows": 1074,
+  "industries": 31,
+  "generated_at": "2026-06-06T17:25:59",
+  "files": {
+    "industry_valuation": "industry_valuation.csv"
+  }
+}

@@ -13,7 +13,11 @@ def _read_equity_csv(path: str) -> tuple[list[date], list[float]]:
         reader = csv.DictReader(handle)
         for row in reader:
             dates.append(date.fromisoformat(row["date"]))
-            equity.append(float(row["strategy_equity"]))
+            # Try common column names: strategy_equity, strategy, combined_equity
+            col = next((c for c in ["strategy_equity", "strategy", "combined_equity"] if c in row), None)
+            if col is None:
+                raise KeyError(f"No equity column found in {path}. Available: {list(row.keys())}")
+            equity.append(float(row[col]))
     return dates, equity
 
 

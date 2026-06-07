@@ -1,0 +1,14 @@
+metric,value
+annualized_return,0.0054954728
+average_turnover,1.0434612380
+benchmark_final_equity,0.9667099414
+calmar_ratio,0.0150759504
+equal_weight_final_equity,1.0374609450
+excess_return_vs_benchmark,0.0588591969
+excess_return_vs_equal_weight,-0.0133510885
+final_equity,1.0236097121
+max_consecutive_losing_months,4.0000000000
+max_drawdown,-0.3645191618
+monthly_win_rate,0.4909090909
+sharpe_ratio,0.1277064084
+total_transaction_cost,0.0500861394

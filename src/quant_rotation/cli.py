@@ -182,6 +182,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait between AKShare requests",
     )
     breadth.add_argument(
+        "--constituent-snapshots",
+        default=None,
+        help=(
+            "Historical snapshot CSV with snapshot_date, stock, industry columns. "
+            "When provided, breadth is computed with point-in-time constituents."
+        ),
+    )
+    breadth.add_argument(
+        "--max-stocks-per-industry",
+        type=int,
+        default=None,
+        help="Optional cap for smoke tests when using historical snapshots",
+    )
+    breadth.add_argument(
         "--industry-indexes",
         default="",
         help=(
@@ -230,6 +244,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Seconds to wait between AKShare requests",
+    )
+    stock.add_argument(
+        "--constituent-snapshots",
+        default=None,
+        help=(
+            "Historical snapshot CSV with snapshot_date, stock, industry columns. "
+            "When provided, stock data is fetched for the snapshot union."
+        ),
     )
     stock.add_argument(
         "--industry-indexes",
@@ -788,6 +810,10 @@ def build_parser() -> argparse.ArgumentParser:
                              help="Output CSV path for industry_prosperity.csv")
     compute_pros.add_argument("--window", type=int, default=60,
                              help="Rolling window for z-score (default: 60)")
+    compute_pros.add_argument("--release-lag-days", type=int, default=1,
+                             help="Days after source date before the signal is usable")
+    compute_pros.add_argument("--metadata-output", default=None,
+                             help="Output JSON metadata path (default: sibling manifest)")
 
     compute_val = subparsers.add_parser(
         "compute-valuation",
@@ -802,12 +828,62 @@ def build_parser() -> argparse.ArgumentParser:
 
     hist_const = subparsers.add_parser(
         "fetch-historical-constituents",
-        help="Validate and import historical SW constituent snapshots from CSV",
+        help="Fetch, convert, or import historical SW constituent snapshots",
     )
-    hist_const.add_argument("--input", required=True,
-                           help="Path to snapshot CSV (columns: snapshot_date, stock, industry)")
+    hist_const.add_argument(
+        "--source",
+        default="csv-snapshots",
+        choices=("csv-snapshots", "csv-intervals", "sws", "tushare", "joinquant"),
+        help=(
+            "Source type. csv-snapshots validates/imports ready snapshots; "
+            "csv-intervals expands stock/industry start/end intervals; sws, "
+            "tushare, and joinquant fetch external sources."
+        ),
+    )
+    hist_const.add_argument(
+        "--input",
+        default=None,
+        help=(
+            "Input CSV. For csv-snapshots: snapshot_date, stock, industry. "
+            "For csv-intervals: stock, industry, start_date/in_date, end_date/out_date."
+        ),
+    )
     hist_const.add_argument("--output", required=True,
                            help="Target path for validated snapshot CSV")
+    hist_const.add_argument("--start", default=None,
+                           help="Snapshot start date, YYYY-MM-DD or YYYYMMDD")
+    hist_const.add_argument("--end", default=None,
+                           help="Snapshot end date, YYYY-MM-DD or YYYYMMDD")
+    hist_const.add_argument(
+        "--snapshot-frequency",
+        default="event",
+        choices=("event", "daily", "month-end", "quarter-end"),
+        help="Snapshot dates when expanding interval sources",
+    )
+    hist_const.add_argument(
+        "--industries",
+        default="",
+        help="Optional comma-separated industry names for SWS",
+    )
+    hist_const.add_argument(
+        "--request-interval",
+        type=float,
+        default=0.0,
+        help="Seconds to wait between external source requests",
+    )
+    hist_const.add_argument(
+        "--no-ssl-verify",
+        action="store_true",
+        help="Disable SSL certificate verification for SWS download probing",
+    )
+    hist_const.add_argument("--tushare-token", default=None,
+                           help="Tushare token (default: TUSHARE_TOKEN or TS_TOKEN)")
+    hist_const.add_argument("--tushare-src", default="SW2021",
+                           help="Tushare SW source, e.g. SW2021")
+    hist_const.add_argument("--jq-user", default=None,
+                           help="JoinQuant username (default: JQDATA_USER)")
+    hist_const.add_argument("--jq-password", default=None,
+                           help="JoinQuant password (default: JQDATA_PASSWORD)")
     hist_const.add_argument("--overwrite", action="store_true",
                            help="Overwrite existing target file")
     hist_const.add_argument("--validate-only", action="store_true",
@@ -1831,15 +1907,22 @@ def fetch_breadth_data_command(args: argparse.Namespace) -> int:
         if args.industry_indexes.strip()
         else None
     )
+    constituent_snapshots = (
+        load_stock_industry_map_csv(args.constituent_snapshots)
+        if args.constituent_snapshots
+        else None
+    )
     summary = fetch_and_write_breadth_data(
         args.output,
         start,
         end,
         industries=industry_indexes,
+        constituent_snapshots=constituent_snapshots,
         windows=windows,
         min_stocks=args.min_stocks,
         adjust=args.adjust,
         lookback_days=args.lookback_days,
+        max_stocks_per_industry=args.max_stocks_per_industry,
         progress=print,
         request_interval=args.request_interval,
     )
@@ -1862,11 +1945,17 @@ def fetch_stock_data_command(args: argparse.Namespace) -> int:
         if args.industry_indexes.strip()
         else None
     )
+    constituent_snapshots = (
+        load_stock_industry_map_csv(args.constituent_snapshots)
+        if args.constituent_snapshots
+        else None
+    )
     summary = fetch_and_write_stock_data(
         args.output,
         start,
         end,
         industries=industry_indexes,
+        constituent_snapshots=constituent_snapshots,
         adjust=args.adjust,
         max_stocks_per_industry=args.max_stocks_per_industry,
         progress=print,
@@ -2109,9 +2198,13 @@ def signal_command(args: argparse.Namespace) -> int:
 
 def compute_prosperity_command(args: argparse.Namespace) -> int:
     import csv
+    import json
+    from datetime import datetime
     from quant_rotation.data import load_wide_asset_csv
     from quant_rotation.real_data import compute_industry_amount_zscore
 
+    if args.release_lag_days < 0:
+        raise ValueError("--release-lag-days must be non-negative")
     raw_amount = load_wide_asset_csv(args.amount_csv, value_name="amount")
     zscore_data = compute_industry_amount_zscore(raw_amount, window=args.window)
 
@@ -2126,13 +2219,45 @@ def compute_prosperity_command(args: argparse.Namespace) -> int:
                 *[f"{zscore_data.closes[asset][i]:.6f}" for asset in zscore_data.assets],
             ])
 
+    metadata_path = (
+        Path(args.metadata_output)
+        if args.metadata_output
+        else output_path.with_name("industry_prosperity_manifest.json")
+    )
+    metadata = {
+        "provider": "derived",
+        "source_file": str(Path(args.amount_csv).resolve()),
+        "source_factor": "industry_amount",
+        "method": "rolling_amount_zscore",
+        "window": args.window,
+        "release_lag_days": args.release_lag_days,
+        "available_time": "post_close",
+        "usable_from": "next_rebalance",
+        "start": zscore_data.dates[0].isoformat(),
+        "end": zscore_data.dates[-1].isoformat(),
+        "rows": len(zscore_data.dates),
+        "industries": len(zscore_data.assets),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "files": {
+            "industry_prosperity": output_path.name,
+        },
+    }
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
     print(f"Prosperity proxy written to: {output_path.resolve()}")
+    print(f"Prosperity metadata written to: {metadata_path.resolve()}")
     print(f"Dates: {len(zscore_data.dates)}, Industries: {len(zscore_data.assets)}")
     return 0
 
 
 def compute_valuation_command(args: argparse.Namespace) -> int:
     import csv
+    import json
+    from datetime import datetime
     from quant_rotation.data import load_wide_close_csv
     from quant_rotation.real_data import compute_industry_valuation_proxy
 
@@ -2150,37 +2275,172 @@ def compute_valuation_command(args: argparse.Namespace) -> int:
                 *[f"{valuation_data.closes[asset][i]:.6f}" for asset in valuation_data.assets],
             ])
 
+    metadata_path = output_path.with_name("industry_valuation_manifest.json")
+    metadata = {
+        "provider": "derived",
+        "source_file": str(Path(args.close_csv).resolve()),
+        "source_factor": "industry_close",
+        "method": "rolling_price_percentile",
+        "window": args.window,
+        "release_lag_days": 1,
+        "available_time": "post_close",
+        "usable_from": "next_rebalance",
+        "start": valuation_data.dates[0].isoformat(),
+        "end": valuation_data.dates[-1].isoformat(),
+        "rows": len(valuation_data.dates),
+        "industries": len(valuation_data.assets),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "files": {
+            "industry_valuation": output_path.name,
+        },
+    }
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
     print(f"Valuation proxy written to: {output_path.resolve()}")
+    print(f"Valuation metadata written to: {metadata_path.resolve()}")
     print(f"Dates: {len(valuation_data.dates)}, Industries: {len(valuation_data.assets)}")
     return 0
 
 
 def fetch_historical_constituents_command(args: argparse.Namespace) -> int:
+    import os
     from quant_rotation.real_data import (
-        validate_constituent_snapshot_csv,
+        build_constituent_snapshots_from_intervals,
+        fetch_joinquant_sw_level1_constituent_intervals,
+        fetch_sws_level1_constituent_intervals,
+        fetch_tushare_sw_level1_constituent_intervals,
         import_constituent_snapshot,
+        read_constituent_interval_csv,
+        validate_constituent_snapshot_csv,
+        write_constituent_snapshot_csv,
     )
 
-    source = Path(args.input)
-    issues = validate_constituent_snapshot_csv(source)
-    if issues:
-        print(f"Validation found {len(issues)} issue(s):")
-        for issue in issues:
-            print(f"  [FAIL] {issue}")
-        if not args.validate_only:
+    if args.source == "csv-snapshots":
+        if not args.input:
+            print("Error: --input is required for --source csv-snapshots")
             return 1
-    else:
-        print("Validation passed.")
+        source = Path(args.input)
+        issues = validate_constituent_snapshot_csv(source)
+        if issues:
+            print(f"Validation found {len(issues)} issue(s):")
+            for issue in issues:
+                print(f"  [FAIL] {issue}")
+            if not args.validate_only:
+                return 1
+        else:
+            print("Validation passed.")
 
-    if args.validate_only:
-        return 0 if not issues else 1
+        if args.validate_only:
+            return 0 if not issues else 1
 
-    target = Path(args.output)
+        target = Path(args.output)
+        try:
+            rows = import_constituent_snapshot(source, target, overwrite=args.overwrite)
+            print(f"Imported {rows} rows to: {target.resolve()}")
+            return 0
+        except (ValueError, FileExistsError) as exc:
+            print(f"Error: {exc}")
+            return 1
+
+    if not args.start or not args.end:
+        print(f"Error: --start and --end are required for --source {args.source}")
+        return 1
+    start = parse_date(args.start)
+    end = parse_date(args.end)
+
     try:
-        rows = import_constituent_snapshot(source, target, overwrite=args.overwrite)
-        print(f"Imported {rows} rows to: {target.resolve()}")
+        if args.source == "csv-intervals":
+            if not args.input:
+                print("Error: --input is required for --source csv-intervals")
+                return 1
+            intervals = read_constituent_interval_csv(Path(args.input))
+        elif args.source == "sws":
+            industries = [
+                item.strip()
+                for item in args.industries.split(",")
+                if item.strip()
+            ] or None
+            intervals = fetch_sws_level1_constituent_intervals(
+                industries=industries,
+                verify_ssl=not args.no_ssl_verify,
+                request_interval=args.request_interval,
+                progress=print,
+            )
+        elif args.source == "tushare":
+            token = (
+                args.tushare_token
+                or os.environ.get("TUSHARE_TOKEN")
+                or os.environ.get("TS_TOKEN")
+            )
+            if not token:
+                print(
+                    "Error: Tushare token is required. Pass --tushare-token "
+                    "or set TUSHARE_TOKEN/TS_TOKEN."
+                )
+                return 1
+            intervals = fetch_tushare_sw_level1_constituent_intervals(
+                token=token,
+                src=args.tushare_src,
+                progress=print,
+            )
+        elif args.source == "joinquant":
+            username = args.jq_user or os.environ.get("JQDATA_USER")
+            password = args.jq_password or os.environ.get("JQDATA_PASSWORD")
+            if not username or not password:
+                print(
+                    "Error: JoinQuant credentials are required. Pass --jq-user "
+                    "and --jq-password or set JQDATA_USER/JQDATA_PASSWORD."
+                )
+                return 1
+            intervals = fetch_joinquant_sw_level1_constituent_intervals(
+                username=username,
+                password=password,
+                progress=print,
+            )
+        else:
+            print(f"Error: unsupported source {args.source}")
+            return 1
+
+        stock_map = build_constituent_snapshots_from_intervals(
+            intervals,
+            start,
+            end,
+            snapshot_frequency=args.snapshot_frequency,
+        )
+        snapshot_dates = sorted(stock_map.snapshots)
+        row_count = sum(len(mapping) for mapping in stock_map.snapshots.values())
+        print(
+            "Built historical snapshots: "
+            f"{len(snapshot_dates)} dates, {row_count} rows, "
+            f"{len(stock_map.all_stocks)} stocks"
+        )
+        print(
+            "Snapshot range: "
+            f"{snapshot_dates[0].isoformat()} to {snapshot_dates[-1].isoformat()}"
+        )
+        if args.validate_only:
+            return 0
+
+        target = Path(args.output)
+        rows = write_constituent_snapshot_csv(
+            stock_map,
+            target,
+            overwrite=args.overwrite,
+        )
+        issues = validate_constituent_snapshot_csv(target)
+        if issues:
+            print(f"Written file failed validation with {len(issues)} issue(s):")
+            for issue in issues:
+                print(f"  [FAIL] {issue}")
+            return 1
+        print(f"Historical constituent snapshots written to: {target.resolve()}")
+        print(f"Rows: {rows}")
         return 0
-    except (ValueError, FileExistsError) as exc:
+    except (RuntimeError, ValueError, FileExistsError) as exc:
         print(f"Error: {exc}")
         return 1
 

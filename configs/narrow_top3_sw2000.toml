@@ -1,0 +1,40 @@
+# Narrowed best-fixed (sw2000 segment): top_k=3, hard, risk_off=0, mscore=false
+
+[data]
+industry_close = "../data/real_sw2000/industry_close.csv"
+industry_amount = "../data/real_sw2000/industry_amount.csv"
+benchmark_close = "../data/real_sw2000/benchmark_close.csv"
+
+[strategy]
+rebalance_every = 20
+top_k = 3
+max_industry_weight = 0.35
+transaction_cost = 0.001
+risk_control = true
+market_ma_window = 120
+market_score_control = false
+market_score_window = 60
+market_score_threshold = 0.0
+risk_off_exposure = 0.00
+portfolio_mode = "equal"
+risk_control_mode = "hard"
+
+[factors]
+ret20_weight = 0.00
+ret60_weight = 1.00
+ret120_weight = 0.00
+amount_strength_weight = 0.00
+breadth20_weight = 0.00
+breadth60_weight = 0.00
+valuation_weight = 0.00
+prosperity_weight = 0.00
+vol20_weight = 0.00
+ret5_weight = -0.50
+
+[reports]
+output_dir = "../reports/narrow_top3_sw2000"
+
+[market_weights]
+CSI300 = 0.50
+CSIAll = 0.30
+ChiNext = 0.20

@@ -368,10 +368,42 @@ python -m quant_rotation fetch-real-data `
   --industry-universe sw2021
 ```
 
+Historical SW constituent snapshots can be imported from a ready snapshot CSV,
+expanded from an interval CSV, or fetched from supported external sources. AKShare
+`index_component_sw` does not expose a historical date parameter, so use one of
+these routes before treating stock-level or breadth data as production research:
+
+```powershell
+$env:PYTHONPATH="src"
+
+# Reproducible SW 2021 classification-table source from the SWS download center.
+python -m quant_rotation fetch-historical-constituents `
+  --source sws `
+  --start 2021-12-13 `
+  --end 2026-06-03 `
+  --output data/real_sw2021/stock_industry_map_historical.csv `
+  --snapshot-frequency event `
+  --no-ssl-verify
+
+# Production-grade interval sources when credentials/data are available.
+python -m quant_rotation fetch-historical-constituents `
+  --source joinquant `
+  --start 2021-12-13 `
+  --end 2026-06-03 `
+  --output data/real_sw2021/stock_industry_map_historical.csv
+
+python -m quant_rotation fetch-historical-constituents `
+  --source csv-intervals `
+  --input vendor/sw_member_intervals.csv `
+  --start 2021-12-13 `
+  --end 2026-06-03 `
+  --output data/real_sw2021/stock_industry_map_historical.csv
+```
+
 The `fetch-breadth-data` command computes phase-3 industry breadth files from
-SW industry constituents and A-share stock closes. The current implementation
-uses AKShare `index_component_sw` current constituents, so treat it as a
-research approximation until historical constituent snapshots are wired in:
+SW industry constituents and A-share stock closes. Without
+`--constituent-snapshots`, it still uses AKShare current constituents and should
+be treated as a research approximation:
 
 ```powershell
 $env:PYTHONPATH="src"
@@ -380,6 +412,19 @@ python -m quant_rotation fetch-breadth-data `
   --start 2021-12-13 `
   --end 2026-06-02 `
   --windows 20,60 `
+  --request-interval 0.2
+```
+
+With a historical snapshot CSV, breadth is computed from point-in-time
+constituents:
+
+```powershell
+python -m quant_rotation fetch-breadth-data `
+  --output data/real_sw2021 `
+  --start 2021-12-13 `
+  --end 2026-06-03 `
+  --windows 20,60 `
+  --constituent-snapshots data/real_sw2021/stock_industry_map_historical.csv `
   --request-interval 0.2
 ```
 
@@ -403,9 +448,10 @@ valuation_weight = 0.15
 prosperity_weight = 0.15
 ```
 
-The `fetch-stock-data` command prepares phase-5 stock-selection inputs from
-current SW constituents. Use `--max-stocks-per-industry` for a small smoke test
-before fetching the full constituent universe:
+The `fetch-stock-data` command prepares phase-5 stock-selection inputs. Use
+`--constituent-snapshots` for point-in-time stock-industry membership, and use
+`--max-stocks-per-industry` for a small smoke test before fetching the full
+constituent universe:
 
 ```powershell
 $env:PYTHONPATH="src"
@@ -418,10 +464,20 @@ python -m quant_rotation fetch-stock-data `
   --request-interval 0.2
 ```
 
+```powershell
+python -m quant_rotation fetch-stock-data `
+  --output data/real_sw2021 `
+  --start 2021-12-13 `
+  --end 2026-06-03 `
+  --adjust qfq `
+  --constituent-snapshots data/real_sw2021/stock_industry_map_historical.csv `
+  --request-interval 0.2
+```
+
 This writes `stock_close.csv`, `stock_amount.csv` when AKShare returns amount
-or volume fields, `stock_industry_map.csv`, and `stock_manifest.json`. The map
-uses current constituents, so keep it as research data until historical
-constituent snapshots are available.
+or volume fields, `stock_industry_map.csv`, and `stock_manifest.json`. The
+manifest records whether the map came from current constituents or historical
+snapshots.
 
 The CLI writes reports to `reports/` by default:
 

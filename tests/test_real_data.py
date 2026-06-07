@@ -12,8 +12,10 @@ from quant_rotation.data import (
     load_wide_asset_csv,
     load_wide_close_csv,
 )
-from quant_rotation.models import PriceData
+from quant_rotation.models import PriceData, StockIndustryMap
 from quant_rotation.real_data import (
+    build_constituent_snapshots_from_intervals,
+    compute_historical_industry_breadth,
     compute_industry_breadth,
     fetch_sw_level1_market_data,
     fetch_sw_level1_breadth_data,
@@ -281,6 +283,77 @@ class RealDataTests(unittest.TestCase):
             {"000001": "IndustryA", "000003": "IndustryB"},
         )
 
+    def test_build_constituent_snapshots_from_intervals_event_dates(self) -> None:
+        stock_map = build_constituent_snapshots_from_intervals(
+            [
+                {
+                    "stock": "000001",
+                    "industry": "IndustryA",
+                    "start_date": "2024-01-01",
+                    "end_date": "2024-01-03",
+                },
+                {
+                    "stock": "000001",
+                    "industry": "IndustryB",
+                    "start_date": "2024-01-04",
+                    "end_date": "",
+                },
+                {
+                    "stock": "000002",
+                    "industry": "IndustryA",
+                    "start_date": "2024-01-01",
+                    "end_date": "",
+                },
+            ],
+            date(2024, 1, 2),
+            date(2024, 1, 5),
+        )
+
+        self.assertEqual(
+            list(sorted(stock_map.snapshots)),
+            [date(2024, 1, 2), date(2024, 1, 4), date(2024, 1, 5)],
+        )
+        self.assertEqual(
+            stock_map.get_map_at(date(2024, 1, 3))["000001"],
+            "IndustryA",
+        )
+        self.assertEqual(
+            stock_map.get_map_at(date(2024, 1, 4))["000001"],
+            "IndustryB",
+        )
+
+    def test_compute_historical_industry_breadth_uses_snapshot_membership(self) -> None:
+        dates = [date(2024, 1, day) for day in range(1, 6)]
+        stock_closes = {
+            "000001": dict(zip(dates, [1.0, 2.0, 3.0, 4.0, 5.0], strict=True)),
+            "000002": dict(zip(dates, [5.0, 4.0, 3.0, 2.0, 1.0], strict=True)),
+        }
+        stock_map = StockIndustryMap(
+            {
+                date(2024, 1, 1): {
+                    "000001": "IndustryA",
+                    "000002": "IndustryA",
+                },
+                date(2024, 1, 4): {
+                    "000001": "IndustryB",
+                    "000002": "IndustryA",
+                },
+            }
+        )
+
+        breadth = compute_historical_industry_breadth(
+            stock_map,
+            stock_closes,
+            date(2024, 1, 3),
+            date(2024, 1, 5),
+            windows=(2,),
+            min_stocks=1,
+        )
+
+        self.assertEqual(breadth[2].dates, [date(2024, 1, 4), date(2024, 1, 5)])
+        self.assertEqual(breadth[2].closes["IndustryA"], [0.0, 0.0])
+        self.assertEqual(breadth[2].closes["IndustryB"], [1.0, 1.0])
+
     def test_write_breadth_data_files_outputs_loadable_csvs(self) -> None:
         breadth = PriceData(
             dates=[date(2024, 1, 3), date(2024, 1, 4)],
@@ -306,6 +379,29 @@ class RealDataTests(unittest.TestCase):
         self.assertEqual(loaded.assets, ["IndustryA", "IndustryB"])
         self.assertEqual(loaded.closes["IndustryA"], [0.5, 0.75])
         self.assertIn("survivor_bias_warning", manifest)
+
+    def test_write_breadth_data_files_historical_manifest_has_no_warning(self) -> None:
+        breadth = PriceData(
+            dates=[date(2024, 1, 3), date(2024, 1, 4)],
+            closes={"IndustryA": [0.5, 0.75]},
+        )
+        stock_map = StockIndustryMap(
+            {date(2024, 1, 1): {"000001": "IndustryA"}}
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = write_breadth_data_files(
+                Path(tmp),
+                {20: breadth},
+                min_stocks=1,
+                current_constituents=False,
+                constituent_snapshots=stock_map,
+            )
+            manifest = summary.manifest_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("survivor_bias_warning", manifest)
+        self.assertIn("sw_level1_historical_constituent_snapshots", manifest)
+        self.assertIn('"snapshot_count": 1', manifest)
 
     def test_write_stock_data_files_outputs_loadable_csvs(self) -> None:
         close = PriceData(
@@ -347,6 +443,49 @@ class RealDataTests(unittest.TestCase):
             {"000001": "IndustryA", "000002": "IndustryB"},
         )
         self.assertIn("survivor_bias_warning", manifest)
+
+    def test_write_stock_data_files_outputs_historical_snapshot_map(self) -> None:
+        close = PriceData(
+            dates=[date(2024, 1, 1), date(2024, 1, 2)],
+            closes={
+                "000001": [10.0, 11.0],
+                "000002": [20.0, 19.0],
+            },
+        )
+        stock_map = StockIndustryMap(
+            {
+                date(2024, 1, 1): {
+                    "000001": "IndustryA",
+                    "000002": "IndustryB",
+                },
+                date(2024, 1, 2): {
+                    "000001": "IndustryB",
+                    "000002": "IndustryB",
+                },
+            }
+        )
+        stock_data = StockMarketData(
+            close=close,
+            amount=None,
+            industry_map=stock_map,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = write_stock_data_files(
+                Path(tmp),
+                stock_data,
+                current_constituents=False,
+            )
+            loaded_map = load_stock_industry_map_csv(summary.stock_industry_map_path)
+            manifest = summary.manifest_path.read_text(encoding="utf-8")
+
+        self.assertEqual(len(loaded_map.snapshots), 2)
+        self.assertEqual(
+            loaded_map.get_map_at(date(2024, 1, 2))["000001"],
+            "IndustryB",
+        )
+        self.assertNotIn("survivor_bias_warning", manifest)
+        self.assertIn('"snapshot_count": 2', manifest)
 
     def test_write_real_data_files_outputs_loadable_csvs(self) -> None:
         industry_data = PriceData(
