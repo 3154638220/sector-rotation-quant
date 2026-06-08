@@ -146,6 +146,11 @@ class StrategyConfig:
     adaptive_top_k: bool = False
     adaptive_top_k_base: int = 5
     adaptive_top_k_concentration: float = 1.5
+    dynamic_top_k: bool = False
+    dynamic_top_k_min: int = 3
+    dynamic_top_k_max: int = 7
+    dynamic_top_k_disp_low: float = 0.04
+    dynamic_top_k_disp_high: float = 0.10
     risk_control_dual_ma: bool = False
     state_aware_bull_threshold: float = 1.5
     state_aware_bear_threshold: float = 0.0
@@ -166,6 +171,22 @@ class StrategyConfig:
     defensive_sector_filter: bool = False
     defensive_sector_cap: float = 0.50
     relative_excess_target: float = 0.05
+    cluster_constraint: bool = False
+    max_per_cluster: int = 2
+    market_state_mode: str = "binary"
+    three_state_strong_exposure: float = 1.00
+    three_state_neutral_exposure: float = 0.60
+    three_state_weak_exposure: float = 0.25
+    three_state_trend_weight: float = 0.35
+    three_state_dispersion_weight: float = 0.25
+    three_state_momentum_weight: float = 0.25
+    three_state_breadth_weight: float = 0.15
+    three_state_strong_threshold: float = 0.25
+    three_state_weak_threshold: float = -0.10
+    turnover_budget: float | None = None
+    turnover_budget_window: int = 252
+    staggered_rebalance: bool = False
+    staggered_n_tranches: int = 4
 
 
 @dataclass(frozen=True)

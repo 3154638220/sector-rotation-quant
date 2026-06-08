@@ -1,1290 +1,1193 @@
-# 行动计划 v2：从「有效实验」到「稳健年化」
-> 深度诊断基于：全量代码、all 实验报告目录（Phase A~E）、
-> 27 折跨段 WF、Phase D 股票层结果、Phase E 最终扫描
-> 分析日期：2026-06-06
-> 版本：本文件完整替代上一版 plan.md，聚焦「已验证成果的组合与稳定化」
-> 最后更新：2026-06-07（第五轮：Phase D 无偏重跑 + breadth 本地计算 + plan 状态同步）
+# 行动计划 v3：打造强 Alpha 模型的系统性路径
 
-## 0.0 执行进度快照（2026-06-06 更新）
-
-| 阶段 | 状态 | 关键结论 |
-|------|------|---------|
-| F：仓位控制重构 | ✅ 实验完成 | soft mode 未超越 hard 基线（最优 softoff0p2 年化 7.29% vs 基线 6.51%，无显著改善）|
-| G：年度收益稳定化 | ✅ 实验完成 | 年度预算控制不触发（回报太低）；**vol_target 已排除**：三档 DD -35~-37%，年化 ~0% |
-| H：因子精简 + WF | ✅ 实验完成 | H1/H2/H3 三段 WF + 工具 7/8/9 + Layer 2 跨段 WF 均跑完；H2 WF 14.93% 最强但固定配置不可用；Layer 2 盈利折 8/19 未达标 |
-| I：数据质量 | ✅ 元数据已补齐 | Prosperity manifest（release_lag_days/available_time）已生成；valuation manifest 已生成；AKShare `date` 参数不支持（已确认）；breadth 已用本地数据重算 |
-| **J：收益增强** | **✅ 实验完成** | H1+H2 聚合年化 2.02%（被 H2 拖累）；风控 hit_rate 四段全部 <50% |
-| Phase D 重启 | ✅ SW2021 无偏已完成 | 无偏重跑：年化 -2.87%, Sharpe -0.013（前视偏差贡献 ~13.7pp）；策略在无偏数据上完全失效；sw2000/sw2014 仍需 JoinQuant/Tushare/vendor 补齐成分股 |
-
-**实验结论**：六轮推进后所有路径收敛到同一结论：
-- 软仓位/defensive/vol_target/budget_control 均无法超越生产基线（hard mode, risk_off=0, top_k=5）
-- 风控系统在所有时间段净害（hit_rate 22~38%）
-- 最优固定候选 Layer 2 OOS 净值 1.68 vs 基准 1.50（长期超基准），但盈利折仅 8/19
-- **A 股行业动量在折级一致性上存在根本限制**：无法确保任意 6 个月窗口的正稳定性
-
-详见新增的 §0.4「本轮实验结果汇总」。
-
-### 0.0.1 本次推进记录（2026-06-06）
-
-| 项目 | 结果 | 产物 |
-|------|------|------|
-| 年度收益工具修复 | 兼容 `strategy_return` 列，可直接读取现有 `annual_returns.csv` | `tools/annual_returns_summary.py` |
-| 数据完整性检查增强 | 按 config 读取数据，检查覆盖、缺失、日期对齐、价格跳变和当前成分股元数据风险 | `tools/data_integrity_check.py` |
-| AKShare 历史成分股探测 | 本地 AKShare 已安装，但 `index_component_sw` 不支持 `date` 参数 | `tools/check_akshare_historical_constituents.py` |
-| 27 折全段固定候选 WF | 固定 top3 长期跑赢基准，但盈利折数 13/27，未达到生产稳定性门槛 | `reports/exp_full27_best_fixed/` |
-| 个股数据源兼容 | `stock_zh_a_hist_tx` 不存在时回退到 `stock_zh_a_hist` | `src/quant_rotation/real_data.py` |
-| 回归测试 | 全量测试通过：139/139 | `python -m pytest` |
-
-**当前决策**：
-- 不创建 `configs/production_v2.toml`：Layer 3 盈利折数未达标。
-- 不重启 Phase D：缺历史成分股快照，且行业层策略未达到生产门槛。
-- Prosperity 因子继续保持生产权重 0：宽表质量通过，但缺来源和发布滞后证明。
-
-### 0.0.2 本次推进记录（2026-06-06，第二轮）
-
-| 项目 | 结果 | 产物 |
-|------|------|------|
-| 年度收益工具增强 | 支持多文件对比、分段统计（sw2000/sw2014/sw2021）、--compare 并排比较 | `tools/annual_returns_summary.py` |
-| WF 分段诊断工具 | 读取 `walk_forward_folds.csv`，按 segment 统计盈利折数、per-segment metrics、失败折列表、train→test 退化诊断、生产就绪 verdict | `tools/wf_segment_diagnosis.py` |
-| Phase D 简化版实验 | 仅用流动性过滤（amount_strength），无 vol/mom 股票因子；年化 4.28%, Sharpe 0.32，远弱于 exp_d_best (10.82%)，确认股票 Alpha 因子有意义 | `configs/exp_d_lite.toml`, `reports/exp_d_lite/` |
-| 收窄候选跨段扫参 | 仅 top_k=3,5 + risk_off=0,0.3 + mscore=false,true，8 个候选 × 3 段；最优 `ret60_ret5_top3_riskoff0p3_riskctrl1_mscore0` 年化 7.20% 但 DD -44.17% | `reports/exp_narrow_candidates/` |
-| 窄候选固定配置 | 创建 `narrow_top3_hard.toml`、`narrow_soft30_softmax.toml` 及 sw2000/sw2014 分段变体 | `configs/narrow_*.toml` |
-| 回归测试 | 新增 11 个工具测试，全量 147/147 通过 | `tests/test_tools.py` |
-
-**新增工具使用方式**：
-
-```bash
-# WF 分段诊断（一键看所有 fold 的 segment 分解和失败原因）
-python tools/wf_segment_diagnosis.py reports/exp_full27_best_fixed --all
-
-# 年度收益多文件对比
-python tools/annual_returns_summary.py \
-    reports/real_sw2021/annual_returns.csv \
-    reports/exp_d_lite/annual_returns.csv \
-    --compare reports/exp_d_best/annual_returns.csv --segments
-
-# 数据完整性检查
-python tools/data_integrity_check.py --config configs/real_sw2021.toml
-
-# 风控准确性诊断
-python tools/diagnose_risk_control.py
-```
-
-### 0.0.3 本次推进记录（2026-06-06，第三轮）
-
-| 项目 | 结果 | 产物 |
-|------|------|------|
-| §H.3 H1 防御型单段 WF | 4 折，mean test 年化 7.89%，DD -13.49% | `reports/exp_h1_wf/` |
-| §H.3 H2 均衡型单段 WF | 4 折，mean test 年化 **14.93%**，DD -13.06%，本次最强 | `reports/exp_h2_wf/` |
-| §H.3 H3 进取型单段 WF | 4 折，mean test 年化 12.86%，DD -13.65% | `reports/exp_h3_wf/` |
-| §F.2.3 软仓位扫描 | 48 组合，最优 `ret60_ret5_top5_softoff0p2`：年化 7.29%, Sharpe 0.51 | `reports/exp_f2_soft_exposure/` |
-| §G.2 波动率目标扫描 | vol 0.12/0.15/0.18 三个级别均灾难性失效（年化 -0.04~0.64%，DD -35~-37%）| `configs/exp_g2_vol*.toml`, `reports/exp_g2_vol*/` |
-| Tool 7 因子相关性 | `exp_d_best` 上 4 对高相关（>0.7），`rel_*` 与原始 `ret*` 共线 | `tools/factor_independence.py`（新增 --config 参数） |
-| Tool 8 多策略聚合 | H1(60%)+H2(40%)：年化 2.02%, DD -23.32%，被 H2 拖累 | `reports/combined/combined_equity.csv` |
-| Tool 9 风控精度诊断 | 四段全部 hit_rate<50%（22~38%），market_score 误报率高达 62% | `reports/*/risk_control_accuracy.csv` |
-| **Layer 2 WF**（sw2014+sw2021） | 19 折，mean test 年化 **6.48%**，mean DD **-9.10%**，最优固定候选 `ret60_ret5_top5_riskoff0_modeh_riskctrl1_mscore0`（7/19 折选中）| `reports/exp_l2_wf/` |
-| H1/H2/H3 分年对比 | H1 最稳（最差 -2.2%），H2 最惨（2022-2023 连续 -12~-13%），H3 3 年负收益 FAIL | `tools/annual_returns_summary.py --compare` |
-| 修复 | `combine_strategies.py` 列名兼容（`strategy`/`strategy_equity`）；`factor_independence.py` 支持 `--config` | — |
-| 回归测试 | 全量 147/147 通过 | `python -m pytest` |
-
-**新增关键结论**：
-- **vol_targeting 彻底排除**：三个级别全部导致 -35~-37% DD，年化近乎 0，不可用于生产。
-- **H2 WF 14.93% 的信号需谨慎**：该值来自动态候选选择，固定配置 H2 `run` 仅 -1.48%（2022-2023 连续亏 -12~-13%），意味着 WF 的"聪明选择"高度依赖折内过拟合。
-- **Layer 2 WF 盈利折仅 8/19（42%），中位数 0.00%**：均值 6.48% 由极端压缩贡献（Fold 7+43.5%, Fold 19+77.5%），大多数折（11/19）非正。不推进 Layer 3。
-- **风控 hit_rate 全部 <50%**：四段 22~38%，market_score 误报率高达 62%。风控为净害。
-
-**当前决策**：
-- **vol_targeting 已排除**：三层 vol 全部 DD -35~-37%，年化 ~0%。
-- **Layer 2 未通过**：盈利折 8/19（需 15/27），中位数 0%。不推进 Layer 3。
-- **H1 防御型为最稳定固定候选**：最差年 -2.2%，年化 4.27%（fixed）/ 7.89%（WF）。
-- **H2 均衡型 WF 14.93% 不可用**：固定配置 -1.48%，WF 动态选择来自折内过拟合。
-- **所有实验结论收敛**：A 股行业动量在折级一致性上存在根本性限制（任意 6 个月窗口的正/负极不稳定），继续在该框架内微调参数无法突破。
-
-### 0.0.4 本次推进记录（2026-06-06，第四轮 — plan 清理 + 数据修复）
-
-| 项目 | 结果 | 产物 |
-|------|------|------|
-| plan.md 状态同步 | 修正过期描述：执行快照表、优先级表 I.2、Phase D 条件、prosperity 元数据 | plan.md |
-| stock 数据历史快照重抓 | 用 `--constituent-snapshots` + `stock_industry_map_historical.csv` 重抓 5246 只股票 | ✅ 已完成，stock_manifest.json 确认 current_constituents=false, 173 snapshots |
-| breadth 数据历史快照重算 | 用 `--constituent-snapshots` 重算 industry_breadth*.csv | ✅ 已完成（2026-06-07 本地计算落地，AKShare API 不可用时从本地 stock_close 计算） |
-| valuation manifest 补充 | `compute-valuation` 增加 manifest JSON 输出（来源/滞后元数据） | ✅ 已实现，`industry_valuation_manifest.json` 已生成 |
-
-**当前决策**：
-- SW2021 段历史快照已就绪，stock/breadth 已重抓/重算完毕。
-- Phase D 无偏重跑已执行（2026-06-07），结果见 §0.0.5。
-- sw2000/sw2014 段仍需 JoinQuant/Tushare/vendor 补齐长历史成分股。
-
-### 0.0.5 本次推进记录（2026-06-07，第五轮 — Phase D 无偏重跑 + breadth 落地）
-
-| 项目 | 结果 | 产物 |
-|------|------|------|
-| SW2021 breadth 本地计算 | AKShare API 不可用，改为从本地 stock_close.csv + stock_industry_map.csv 直接计算 industry_breadth20/60 | `data/real_sw2021/industry_breadth20.csv` (1063 天), `industry_breadth60.csv` (1023 天), `breadth_manifest.json` |
-| Phase D 无偏重跑 | 用历史快照数据跑 `configs/exp_d_best.toml`，结果与有偏版本天差地别 | `reports/exp_d_best/`（已覆盖旧结果） |
-| stock_selection.py bug 修复 | `compute_stock_scores` 中 `z_ret20/ret60/vol20/ret5` 改用 `.get(stock, 0.0)`，修复新上市股票无历史数据导致 KeyError | `src/quant_rotation/stock_selection.py:93-103` |
-
-**Phase D 有偏 vs 无偏核心对比**：
-
-| 指标 | 有偏（旧，当前成分股） | 无偏（新，历史快照） | 退化 |
-|------|----------------------|---------------------|------|
-| 年化收益 | **+10.82%** | **-2.87%** | -13.69pp |
-| Sharpe | 0.651 | -0.013 | -0.664 |
-| 最大回撤 | -22.17% | **-49.39%** | -27.22pp |
-| 月胜率 | 34.5% | 27.3% | -7.2pp |
-| 换手率 | — | 0.95 | — |
-| 连续亏损月 | — | 6 | — |
-
-| 年份 | 有偏 | 无偏 | 基准 |
-|------|------|------|------|
-| 2021 | 0.0% | 0.0% | -2.8% |
-| 2022 | 0.0% | 0.0% | -21.6% |
-| 2023 | -1.3% | +26.8% | -11.4% |
-| 2024 | +14.9% | -5.9% | +14.7% |
-| 2025 | +2.3% | **-33.1%** | +17.7% |
-| 2026H1 | +33.5% | +10.7% | +6.1% |
-
-**关键结论**：
-- **前视偏差影响量级 ~13.7pp 年化**：来自 survivorship bias — 用当前成分股选股天然偏向「存活且成功」的股票。
-- 无偏版本 Sharpe < 0、月胜率 27.3%、换手率 0.95 — **Phase D 股票层策略在消除前视偏差后完全失效**，此前的好表现纯属数据偏差。
-- 即使未来补齐 sw2000/sw2014 成分股，也不应对 Phase D 抱期望。
-- `reports/exp_d_best/` 旧有偏结果已被覆盖（仅 plan.md §十五 B 保留了数值记录）。
-
-**当前决策**：
-- **Phase D 正式排除**：在无偏数据上 Sharpe < 0，不进入任何生产候选。
-- **不再推进 Phase D 全段无偏 WF**（即使 sw2000/sw2014 成分股补齐后），因为 SW2021 段已充分证明该策略无效。
-- 剩余唯一阻塞项：sw2000/sw2014 历史成分股（仅影响行业层跨段 WF 的数据质量，非新增实验）。
+> 诊断基础：全量代码、全量实验报告（Phase A~J）、27 折跨段 WF、Phase D 无偏重跑
+> 分析日期：2026-06-07
+> 版本：本文件完整替代上一版 plan.md（v2），专注于「根本性架构升级」而非参数调优
 
 ---
 
-## 零、全面盘点：你走到哪了
+## 第一部分：诊断——当前模型为何不令人满意
 
-### 0.1 已完成实验一览
+### 1.1 核心指标一览（生产基线 + 历史全段）
 
-| 阶段 | 内容 | 状态 | 关键结论 |
-|------|------|------|---------|
-| A：因子架构 | `rel_ret60`、`consistency60`、`prosperity` 实现 | ✅ 完成 | 代码已实现，sweeps 已跑 |
-| B：组合构建 | `softmax`、`vol_parity`、`adaptive_top_k` | ✅ 完成 | 全部在 `portfolio.py` 实现 |
-| C：风控精细化 | 双均线、state-aware regime、MA60 | ✅ 完成 | configs 已有，部分 sweep 结果存在 |
-| D：股票层 Alpha | 个股数据获取 + 股票内精选 | ✅ 完成 | `exp_d_best`: Sharpe 0.651，年化 10.82% |
-| E：最终组合扫描 | 全因子 × 参数矩阵扫描（sw2021） | ✅ 完成 | 最优仍是 `ret60_ret5`，年化 7.3% |
-| WF：跨段验证 | 27 折跨段 WF OOS | ✅ 完成 | OOS Sharpe 中位数 0.043，bootstrap p 89.3% |
+| 指标 | sw2021（~5年）| sw2014（~8年）| sw2000（~4年）| 目标 |
+|------|-------------|-------------|-------------|------|
+| 年化收益 | 6.51% | 10.28% | \-3.1%（估算）| ≥ 15% |
+| Sharpe | 0.52 | 0.60 | < 0 | ≥ 0.80 |
+| **月胜率** | **29.1%** | **33.7%** | **< 30%** | **≥ 50%** |
+| 最大回撤 | -17.3% | **-54.8%** | 未知 | < -20% |
+| WF OOS 盈利折 | 13/27（48%）| — | — | ≥ 19/27 |
+| WF OOS 年化中位数 | **0.0%** | — | — | ≥ 5% |
+| 风控触发比例 | **60%** | — | — | ≤ 30% |
+| 风控 hit rate | **22–38%** | — | — | ≥ 60% |
+| 负收益年份 | 1/6 | 3/8 | 3/4 | ≤ 1/6 |
 
-### 0.2 核心症结：实验结论彼此矛盾
+**结论**：当前模型在 5 年短窗口（sw2021）表现尚可，但一旦放到完整历史（sw2000+sw2014），性能急剧恶化。真正的指标——月胜率 29%、WF OOS 中位数 0%——证明策略缺乏持续 Alpha，是「运气 + 避险」的结合，而非系统性优势。
 
-你已经做了大量实验，但**没有找到在 WF OOS 中一致稳健的配置**。症结如下：
+---
 
-**症结 1：rel_ret60 在 sw2021 单段好，WF OOS 差**
-- `exp_rel_momentum`（sw2021）：Sharpe 约 0.55
-- WF OOS 中 `rel_ret60_ret5_*` 系列的 27 折 OOS 最终净值：**1.73**（与 benchmark 相当）
-- 原因：`rel_ret60` 依赖 `market_close.csv`，早期 sw2000/sw2014 折中市场数据不完整，
-  因子在这些折中退化为 0，选择频次极低（仅 `rel_ret60_ret5_*` 系列共 5 次被选中）
+### 1.2 七个根本性问题
 
-**症结 2：softmax + ret60 是 WF 中的实际胜者，但被忽视**
-- `fixed_candidate_summary.csv` 第 1 名：`ret60_top3_riskoff0p3_pmsoftmax`，27 折 OOS 净值 **2.09**
-- 第 2 名：`ret60_top3_riskoff0p3_pmequal`，净值 2.04
-- 但 WF 动态选择（median OOS Sharpe 0.043）表明：在 WF 中，这些"最优"固定候选
-  仅在少数折中成立，训练集选出的候选在测试集中大量失效
+#### 问题 1：策略本质是「期权型 Beta 暴露」，不是 Alpha
 
-**症结 3：Phase D 股票层的收益来源存疑**
-- `exp_d_best`：Sharpe 0.651，年化 10.82%，最大回撤 -22.2%
-- 但年化分解显示 2022 年 0%（exposure=0 的贡献），2025 年 +2.3%（跑输等权 26%）
-- 主要超额来自 2021-2022 下行期的 0 仓位，以及 2026 年（仅半年）+33.5%
-- **使用了当前成分股地图**（`stock_industry_map.csv` 是静态的），存在潜在前视偏差
+最清晰的证据：
+- 60% 的月份处于 risk-off（空仓）
+- 2022 年 0% 收益的来源：完全规避基准 -21.6%
+- 2024 年 +8.6% 的来源：大牛市 partial exposure
+- 月胜率仅 29%，意味着实际操作时大多数时间在亏钱
 
-**症结 4：月胜率根本性问题未解决**
-- 最新最优配置 `exp_d_best`：月胜率 **34.5%**（Phase D），`real_sw2021`：29.1%
-- 目标是 >52%——两者相差悬殊，说明策略仍是「期权型 Beta 暴露」而非真正 Alpha
+**根本原因**：策略通过「正确地不持仓」赚钱，而不是通过「持有正确的行业」赚钱。  
+这不是 Alpha，这是市场择时 Beta。
 
-### 0.3 重新定义问题
+> 对比测试：A 股行业等权（纯 Beta）在 sw2021 的五年累计收益 1.037，
+> 而生产基线 1.308 的超额来源 92% 来自 2022 年的 0 仓规避（-21.6% × 100%）。
+> 如果剔除 2022 年，策略相对等权几乎没有超额。
 
-**你的真实目标是**：每年收益稳定，而不仅仅是长期回测好看。
+---
 
-「每年稳定」的量化含义：
-- 年度亏损年份不超过 1/6（即每 6 年最多亏 1 年）
-- 没有单年超过 -20% 的大幅回撤
-- 任意 3 年复合收益 > 0
+#### 问题 2：WF OOS 完全退化，动态候选选择无效
 
-当前状态：
-- 2021：0%（risk-off）
-- 2022：0%（risk-off，这算「规避」不算「赚钱」）
-- 2023：-4.6%（行业轮动失效）或 -1.3%（exp_d_best）
-- 2024：+8.6% 或 +14.9%
-- 2025：+18.6% 或 +2.3%
-- 2026（H1）：+6.5% 或 +33.5%
+| WF 指标 | 训练集 | 测试集 | 退化幅度 |
+|---------|--------|--------|--------|
+| 年化均值 | 10.1% | 3.1% | -7pp |
+| 年化**中位数** | 6.5% | **0.0%** | -6.5pp |
+| Sharpe 均值 | 0.53 | 0.07 | -0.46 |
+| Sharpe **中位数** | — | **0.00** | — |
 
-**根本矛盾**：当 risk-off = 0 时，策略在震荡市（2021、2023）不赚钱，
-靠牛市（2025）和规避（2022）勉强维持总收益。
-这不是「每年稳定」，这是「高波动 + 间歇性成功」。
+**根本原因**：
+- 参数空间（因子权重 × top_k × risk_off_exposure × risk_mode）过大，训练集总能找到过拟合的最优解
+- A 股行业轮动在不同市场状态（趋势/震荡/政策驱动）下需要完全不同的策略，固定参数框架无法适应
+- 历史折的最优候选不能预测下一折的最优候选
 
-### 0.4 本轮实验结果汇总（2026-06-06 执行更新）
+---
 
-以下为 Phase F/G/H 在本轮执行中的实际回测数据。
+#### 问题 3：风控是净害——误报率 62–78%
 
-#### 0.4.1 sw2021 单段：各配置对比
+```
+当前风控触发分析：
+  总 rebalance：48 次
+  risk-off 触发：29 次 = 60%（触发过于频繁）
+  hit_rate：22–38%（大多数触发是误报）
+  市场 score 误报率：高达 62%
+```
 
-| 配置 | 年化 | 夏普 | 最大回撤 | 2022 | 2023 | 2024 | 2025 |
-|------|------|------|---------|------|------|------|------|
-| **生产基线** (hard, risk_off=0, top_k=5) | **6.51%** | **0.52** | **-17.3%** | 0.0% | -4.6% | +8.6% | +18.6% |
-| H1 防御型 (soft 30% + budget + defensive) | 4.27% | 0.37 | -21.2% | -1.2% | -2.2% | +4.7% | +13.1% |
-| H1 v3 (soft 40% + top_k=5) | 4.94% | 0.41 | -21.4% | -4.2% | -2.6% | +6.9% | +12.4% |
-| H2 均衡型 (vol_target + prosperity) | -1.48% | 0.02 | -40.7% | -12.2% | -13.2% | +0.8% | +13.8% |
-| H3 进取型 (rel_ret60 + soft) | 4.74% | 0.40 | -22.1% | -2.3% | -1.9% | -1.8% | +17.2% |
-| WF 最优候选 (hard, top_k=3, mscore=false) | 4.22% | 0.34 | -26.7% | — | — | — | — |
+**根本原因**：
+- MA120 是滞后指标，反应速度远落后于市场
+- market_score 使用 60 日均值，信号噪声比低
+- 两个信号的 OR 逻辑（任一触发即 risk-off）导致过度触发
+- 触发后暴露 0%——惩罚过重，且无渐进恢复机制
 
-**结论**：软仓位（floor 30~40%）在 2022 年承担了 1-4% 的亏损，而硬模式规避了全部损失。牛市中的仓位加成不足以弥补。**年度预算控制在当前收益水平下从未触发。**
+---
 
-#### 0.4.2 19 折跨段 WF（sw2014 + sw2021）
+#### 问题 4：因子信息含量低，缺乏正交性
 
-| 指标 | 训练集 | 测试集 |
-|------|--------|--------|
-| 年化收益均值 | 10.1% | 3.1% |
-| 年化收益中位数 | 6.5% | **0.0%** |
-| 夏普均值 | 0.53 | 0.07 |
-| Bootstrap p_positive | — | **71.8%** |
-| 月胜率 | 36.0% | 33.6% |
+```
+生产因子：ret60（1.0）+ ret5（-0.5）
+ablation 分析：
+  - 去掉 ret60：Sharpe 从 0.52 → 0.40（-0.12，显著）
+  - 去掉 ret5：Sharpe 从 0.52 → 0.49（-0.03，边际）
+```
 
-**WF 最佳固定候选（OOS 净值排名）**：
-1. `ret60_ret5_top3_riskoff0_modeh_riskctrl1_mscore0` → OOS 1.678，超额基准 +12.1%
-2. `ret60_ret5_top5_riskoff0_modeh_riskctrl1_mscore0` → OOS 1.640，超额基准 +9.6%
-3. `ret60_ret5_top3_riskoff0p3_modeh_riskctrl1_mscore0` → OOS 1.549，超额基准 +3.5%
+**问题**：
+- 实质上只有 1 个有效因子（ret60）
+- ret5（过热惩罚）是 ret60 的辅助修正，不是独立 Alpha 来源
+- consistency60 在 exp_best_p0 中有一定贡献，但未进入生产
+- 所有因子都是价格衍生因子——同一信息源，无法捕捉基本面驱动的轮动
 
-**WF 核心发现**：
-- top_k=3 > top_k=5 > top_k=8（越小越好）
-- risk_off=0 > risk_off=0.3 > risk_off=0.5（全规避最好）
-- market_score_control=false > true
-- 动态候选选择失效（训练 Sharpe 0.53 → 测试 Sharpe 0.07，严重过拟合）
+---
 
-#### 0.4.3 27 折全段固定候选 WF 补充（sw2000 + sw2014 + sw2021）
+#### 问题 5：组合构建未利用因子强度信息
 
-本次补跑命令：
+- 固定 equal-weight 于 top-K，丢弃了评分差异信息
+- 无行业相关性约束（可能同时选入高相关行业：煤炭 + 有色金属）
+- top_k 固定，无法在高信心时集中、低信心时分散
+- 没有利用过去选择的业绩来调整权重
+
+---
+
+#### 问题 6：Phase D 股票层在无偏差数据上完全失效
+
+| 指标 | 有偏（旧）| 无偏（新）| 退化量 |
+|------|---------|---------|--------|
+| 年化 | +10.82% | **-2.87%** | -13.7pp |
+| Sharpe | 0.651 | **-0.013** | -0.664 |
+| 最大回撤 | -22.17% | **-49.39%** | -27pp |
+
+**结论**：Phase D 全部超额来自 survivorship bias，正式排除。
+
+---
+
+#### 问题 7：数据历史太短，结论脆弱
+
+- sw2021 数据：仅 ~5 年，含 1 次熊市（2022）、1 次震荡（2023）、2 次牛市
+- 5 年不足以区分「策略有效」和「策略在特定宏观环境下运气好」
+- sw2014（2014–2021）数据显示：相同策略在不同宏观环境下 DD -54.8%
+- 历史验证需要覆盖完整市场周期（至少 10 年以上）
+
+---
+
+### 1.3 一句话诊断
+
+> 当前模型是一个**单因子（ret60）+ 极端风控（60% 空仓）+ 等权集中（top-5）**的框架，
+> 其超额收益主要来自在熊市中的「不存在」，而非主动选择更好的行业。
+> 这不是强 Alpha 模型，这是一个**运气加持的择时策略**。
+
+---
+
+## 第二部分：成为强 Alpha 模型的标准定义
+
+### 2.1 强 Alpha 模型的量化定义
+
+| 维度 | 目标值 | 当前状态 |
+|------|--------|---------|
+| 月胜率（相对等权）| ≥ 52% | 29% ❌ |
+| 年化收益（全历史，sw2000+sw2014+sw2021）| ≥ 15% | ~3–7% ❌ |
+| Sharpe（全历史） | ≥ 0.80 | 0.52 ❌ |
+| 最大回撤（全历史） | ≤ -20% | -54.8%（sw2014）❌ |
+| WF OOS 盈利折数 | ≥ 19/27（70%）| 13/27（48%）❌ |
+| WF OOS 年化中位数 | ≥ 5% | 0% ❌ |
+| 负收益年份（单年）| ≤ 1/6 | 3/8（sw2014）❌ |
+| 最差单年 | ≥ -10% | -89%（sw2000/sw2014 期间未测）❌ |
+| 风控 hit rate | ≥ 60% | 22–38% ❌ |
+
+### 2.2 要达到这些目标，策略架构需要什么
+
+```
+当前架构：
+  信号层：ret60 + ret5 → 行业排名
+  过滤层：MA120 + market_score → binary on/off
+  选股层：top-5 equal-weight
+  持仓层：月度再平衡
+
+目标架构：
+  信号层 A：多维度量化因子（价格 + 基本面 + 宏观）→ 每行业综合评分
+  信号层 B：市场状态分类器（多空判断，替代 MA120 单信号）
+  组合层：动态仓位 × 因子强度加权 × 相关性约束
+  执行层：降低换手率的平滑再平衡
+```
+
+---
+
+## 第三部分：改进路径——六个核心方向
+
+> 以下六个方向按照「高确定性收益」到「高风险但潜在高收益」排序。
+> 每个方向都有明确的验收标准和实验协议。
+
+---
+
+### 方向 K：因子质量审计（前置工作，最高优先级）
+
+**为什么要做**：在过去所有实验中，我们从未系统衡量每个因子的信息含量（IC）和稳定性（ICIR）。所有「有效/无效」的结论都来自回测总收益，而非因子本身的预测能力。
+
+**做什么**：
+- 计算每个候选因子的月度 IC（Information Coefficient）：每个调仓日，计算因子分 vs 未来持有期收益的截面相关性
+- 计算 ICIR = mean(IC) / std(IC)，衡量因子稳定性
+- 分析因子衰减曲线：持有 5/10/20/40/60 天的 IC 如何变化
+- 按市场状态（牛/熊/震荡）分层统计 IC
+
+**候选因子 IC/ICIR 评估列表**：
+
+| 因子 | 预期 ICIR | 验证优先级 | 理由 |
+|------|----------|-----------|------|
+| ret60 | 0.10–0.20 | P0 | 主力因子，需要确认 |
+| ret20 | 0.05–0.15 | P0 | 短期动量，当前权重 0 |
+| consistency60 | 0.05–0.10 | P0 | exp_best_p0 有效，需确认 IC |
+| ret5 | -0.05–0.05 | P0 | 过热惩罚，确认负 IC |
+| vol20 | -0.10–-0.05 | P1 | 低波动是否预测收益 |
+| amount_strength | 0.03–0.08 | P1 | 量价配合，验证 IC |
+| rel_ret60 | 0.08–0.15 | P1 | 相对强度（需完整市场数据）|
+| breadth20/60 | 0.05–0.10 | P1 | 内部宽度，验证 IC |
+| prosperity | 0.05–0.10 | P2 | 需要确认数据来源和滞后 |
+| valuation | 0.02–0.06 | P2 | 估值回归，验证方向 |
+
+**实验命令**：
+
+```bash
+# 新增工具：计算所有因子的滚动 IC 和衰减曲线
+python tools/factor_ic_analysis.py \
+    --config configs/real_sw2021.toml \
+    --factors ret60,ret20,consistency60,ret5,vol20,amount_strength \
+    --hold-periods 5,10,20,40,60 \
+    --output reports/factor_ic_audit/
+```
+
+**工具实现（需新增 `tools/factor_ic_analysis.py`）**：
+
+```python
+"""
+计算每个因子在每个调仓日的截面 IC（Spearman rank correlation）。
+输出：
+  - factor_ic.csv：每个因子 × 每个日期的 IC 值
+  - factor_icir.csv：每个因子的 ICIR（按整体 / 按年份 / 按市场状态）
+  - factor_decay.csv：IC 随持有期增加的衰减曲线
+"""
+```
+
+**验收标准**：
+- 找到 ICIR > 0.15 的因子（即有稳定预测能力）
+- 确认现有 ret60 的 ICIR 和衰减曲线（建立基准）
+- 识别 ICIR < 0.05 的无效因子，从候选中剔除
+
+---
+
+### 方向 L：市场状态分类器（替代当前风控架构）
+
+**为什么要做**：当前风控误报率 62–78%，60% 的时间空仓，属于根本性缺陷。  
+问题根源：单一滞后信号（MA120）用二元开关控制仓位。
+
+**目标**：用多信号状态分类器（输出「强势/中性/弱势」三状态概率）替代二元开关。
+
+#### L.1 多信号市场状态评估体系
+
+**信号 1：趋势强度（已有，改造）**
+```python
+# 当前：MA120 二元开关
+# 改为：多均线综合得分（连续值 -1 ~ +1）
+def trend_score(benchmark_closes, index):
+    ma20  = mean(closes[-20:])
+    ma60  = mean(closes[-60:])
+    ma120 = mean(closes[-120:])
+    current = closes[index]
+    score = 0.0
+    score += 0.4 if current > ma20  else -0.4
+    score += 0.4 if current > ma60  else -0.4
+    score += 0.2 if current > ma120 else -0.2
+    return score  # 范围 -1.0 ~ +1.0
+```
+
+**信号 2：截面分散度（新增）**
+```python
+# 轮动有效的前提：行业之间有足够差异
+# 高分散度 → 轮动有效；低分散度（"一起涨一起跌"）→ 轮动失效
+def cross_sectional_dispersion(industry_returns_20d):
+    returns = list(industry_returns_20d.values())
+    std = numpy.std(returns)
+    return std  # 高 std → 有轮动空间
+```
+
+**信号 3：市场惯性（新增）**
+```python
+# 当前 market_score：60 日加权市场收益
+# 改进：区分「动量初始」（最近加速）vs「动量末期」（超买过热）
+def market_momentum_quality(market_closes, index):
+    ret60 = closes[-1] / closes[-60] - 1
+    ret20 = closes[-1] / closes[-20] - 1
+    ret5  = closes[-1] / closes[-5] - 1
+    # 理想信号：60d强劲，近期没有过热
+    momentum_quality = ret60 - max(0, ret5 * 2)
+    return momentum_quality
+```
+
+**信号 4：行业内部宽度（已有，改造）**
+```python
+# 用 breadth20（均线上方个股比例均值）作为市场整体健康度
+# 高宽度（>0.5）→ 市场健康；低宽度（<0.35）→ 市场脆弱
+average_breadth = mean(breadth20_values.values())
+```
+
+#### L.2 三状态市场分类器
+
+```python
+class MarketState(Enum):
+    STRONG  = "strong"   # 满仓（100%），全力轮动
+    NEUTRAL = "neutral"  # 半仓（50-70%），保守轮动
+    WEAK    = "weak"     # 防御（20-30%），低波动防御仓
+
+def classify_market_state(
+    trend_score,          # -1 ~ +1
+    dispersion,           # 0 ~ inf，行业截面标准差
+    momentum_quality,     # 综合市场动量
+    breadth,              # 0 ~ 1
+) -> tuple[MarketState, float]:  # state, exposure
+    # 加权综合得分
+    composite = (
+        0.35 * normalize(trend_score, -1, 1)
+        + 0.25 * normalize(dispersion, 0, 0.15)  # 标准化分散度
+        + 0.25 * normalize(momentum_quality, -0.15, 0.15)
+        + 0.15 * (breadth - 0.5) * 2  # breadth 中心化
+    )
+    
+    if composite > 0.3:
+        return MarketState.STRONG, 1.00
+    elif composite > -0.1:
+        return MarketState.NEUTRAL, 0.60
+    else:
+        return MarketState.WEAK, 0.25
+```
+
+**优势**：
+- 三状态而非二元，减少极端操作
+- 组合多信号降低误报率（从 62% → 预计 < 40%）
+- 连续仓位（25%/60%/100%）而非 0%/100%
+- 截面分散度直接衡量轮动有效性
+
+**实验协议**：
+
+```bash
+# 实验 L1：三状态分类器 vs 当前二元风控，sw2021 回测
+python -m quant_rotation sweep \
+    --config configs/real_sw2021.toml \
+    --industry-only \
+    --factor-set ret60_ret5 \
+    --market-state-mode three_state \
+    --market-state-weights trend:0.35,dispersion:0.25,momentum:0.25,breadth:0.15 \
+    --output-dir reports/exp_L1_three_state
+
+# 实验 L2：分别验证每个子信号的 hit rate 提升
+python tools/diagnose_risk_control.py --config configs/real_sw2021.toml \
+    --mode three_state --output reports/exp_L2_signal_diagnose
+```
+
+**验收标准**：
+- 风控 hit rate ≥ 55%（当前 22–38%）
+- risk-off 触发月份比例 ≤ 40%（当前 60%）
+- 2022 年最大亏损 ≤ -8%（允许小幅参与以维持流动性）
+- 2021 年收益 ≥ 1%（三状态不会把好年全部空仓）
+
+---
+
+### 方向 M：因子多样化——加入基本面维度
+
+**为什么要做**：当前所有因子都是价格衍生量，本质上是同一信息源的不同变形。
+A 股行业轮动存在两种驱动力：（1）动量（已捕捉）；（2）基本面修复/恶化（未捕捉）。
+
+#### M.1 行业景气度因子（Prosperity）——修复并生产化
+
+当前状态：prosperity 权重为 0，因为「来源不明、发布滞后未确认」。
+
+**行动计划**：
+1. 明确数据来源：申万行业 Wind/Bloomberg 盈利预测修正 → 需验证 release_lag
+2. 替代方案：用行业 ROE/ROA 变化率的滚动窗口代理（季度报告，滞后 45 天）
+3. 另一替代：行业内上市公司营收增速的截面 z-score
+
+```python
+# 实现：industry_prosperity 计算器
+def compute_prosperity_from_earnings(
+    industry_earnings_data: dict,  # 每行业每季度 EPS/ROE
+    release_lag_days: int = 45,    # 财报发布滞后
+    window_quarters: int = 4,      # 滚动 4 季度同比
+) -> pd.DataFrame:
+    """
+    计算每行业的景气度变化（4Q 滚动 ROE 变化率），
+    按照财报发布日期右移 release_lag_days，确保无前视偏差。
+    """
+```
+
+**实验**：在景气度数据建立后，做因子 IC 验证（ICIR 目标 > 0.10），
+再做单因子回测，确认方向和权重。
+
+#### M.2 行业估值相对位置因子——改进
+
+当前 `industry_valuation.csv` 使用**价格分位数**（0–1），不是真正的估值数据。
+
+**问题**：价格分位数本质上是反动量因子——低分位意味着近期跌了很多，与 ret60 负相关。
+这解释了为什么 ablation 中 valuation 对 Sharpe 几乎没有贡献（+0.01）——它与 ret60 的信息高度重叠或对冲。
+
+**改进方案**：
+1. 使用真实 PE/PB 历史分位数（需要 Wind/Tushare 数据）
+2. 计算「现在 PE 在过去 3 年历史中的位置」而非「价格在历史中的位置」
+3. 仅对 PE 处于历史低位（< 20th 分位）的行业打正分，而非线性映射
+
+```python
+def valuation_factor_from_pe(
+    pe_data: pd.DataFrame,   # 每行业每日 PE（Wind）
+    window_years: int = 3,   # 历史窗口 3 年
+    threshold_low: float = 0.25,   # 低估值阈值
+    threshold_high: float = 0.75,  # 高估值阈值
+) -> pd.DataFrame:
+    """
+    返回：-1（高估）/ 0（中性）/ +1（低估）的行业评分。
+    """
+    pe_percentile = pe_data.rolling(window=window_years*252, min_periods=126).rank(pct=True)
+    return pd.cut(pe_percentile, bins=[0, threshold_low, threshold_high, 1.0],
+                  labels=[-1, 0, 1]).astype(float)
+```
+
+#### M.3 宏观因子叠加（可选，P2）
+
+针对 A 股特有的宏观敏感性：
+- PMI 制造业指数：制造业 PMI > 50 时周期性行业加权；< 50 时防御性行业加权
+- 信用利差：信用利差扩大时，金融行业负向加权
+- 人民币汇率方向：贬值时，出口行业正向加权
+
+```python
+# macro_overlay.py（新增，可选模块）
+INDUSTRY_MACRO_SENSITIVITY = {
+    "基础化工": {"PMI": 0.8, "CNY": 0.5},
+    "有色金属": {"PMI": 0.7, "credit_spread": -0.6},
+    "银行":     {"credit_spread": -0.8, "PMI": 0.3},
+    "食品饮料": {"PMI": -0.2, "credit_spread": 0.1},  # 防御性
+}
+```
+
+---
+
+### 方向 N：组合构建升级——信号加权 + 相关性约束
+
+**为什么要做**：等权 top-5 是最朴素的实现，丢弃了评分信息，且容易持有高度相关行业。
+
+#### N.1 信号强度加权（替代等权）
+
+```python
+def softrank_weights(scores: dict[str, float], temperature: float = 0.5) -> dict[str, float]:
+    """
+    Softmax-based 权重：温度越低，越集中于最高分行业；温度越高，越均匀。
+    温度 0.3–0.8 为实用范围，配合 IC/ICIR 动态调整温度。
+    """
+    top_k_industries = sorted(scores, key=scores.get, reverse=True)[:top_k]
+    z = {i: scores[i] / temperature for i in top_k_industries}
+    max_z = max(z.values())
+    exp_z = {i: math.exp(v - max_z) for i, v in z.items()}
+    total = sum(exp_z.values())
+    return {i: w / total for i, w in exp_z.items()}
+```
+
+#### N.2 行业相关性约束
+
+**问题**：计算机 + 电子 + 通信（TMT 三剑客）经常同时被选入，实质是高相关资产。
+
+```python
+INDUSTRY_CLUSTER = {
+    "TMT": ["计算机", "电子", "通信", "传媒"],
+    "新能源": ["电力设备", "汽车（新能源相关）"],
+    "周期": ["煤炭", "钢铁", "有色金属", "基础化工"],
+    "金融": ["银行", "非银金融"],
+    "消费": ["食品饮料", "家用电器", "美容护理", "商贸零售"],
+    "医疗": ["医药生物"],
+    "防御": ["公用事业", "交通运输"],
+}
+
+def apply_cluster_constraint(
+    selected_industries: list[str],
+    scores: dict[str, float],
+    max_per_cluster: int = 2,
+) -> list[str]:
+    """确保每个集群内最多选 max_per_cluster 个行业。"""
+```
+
+#### N.3 动态 top_k（基于截面分散度）
+
+```python
+def dynamic_top_k(
+    dispersion: float,
+    k_min: int = 3,
+    k_max: int = 7,
+    disp_low: float = 0.04,   # 低分散度阈值（行业差异小）
+    disp_high: float = 0.10,  # 高分散度阈值（明显轮动机会）
+) -> int:
+    """
+    分散度低时减少持仓数量（更集中于少数优质信号）；
+    分散度高时增加持仓（分散化）。
+    """
+    if dispersion < disp_low:
+        return k_min       # 3 个行业，高集中
+    elif dispersion > disp_high:
+        return k_max       # 7 个行业，分散化
+    else:
+        ratio = (dispersion - disp_low) / (disp_high - disp_low)
+        return int(k_min + ratio * (k_max - k_min))
+```
+
+---
+
+### 方向 O：回测方法论升级——消除训练集污染
+
+**为什么要做**：当前 WF 存在系统性的方法论缺陷，导致 OOS 结果不可信。
+
+#### O.1 Purged WF（净化 Walk-Forward）
+
+**当前问题**：训练集和测试集之间没有「净化间隔」，紧邻测试期开始的训练样本可能泄漏信息。
+
+```python
+def purged_walk_forward_splits(
+    data_length: int,
+    train_window: int = 504,   # 2 年（504 交易日）
+    test_window: int = 63,     # 3 个月（1 折）
+    gap: int = 20,             # 净化间隔（1 个月）
+):
+    """
+    在训练集末尾和测试集开始之间插入 gap 天的间隔，
+    避免最近 gap 天的持仓对测试期产生信息泄漏。
+    """
+```
+
+#### O.2 组合稳定性验证（Stability Test）
+
+```python
+def stability_test(
+    config,
+    data,
+    n_perturb: int = 100,
+    perturb_std: float = 0.05,  # 对因子权重施加 5% 随机扰动
+) -> dict:
+    """
+    对因子权重添加小扰动，验证策略的稳定性。
+    一个真正稳健的策略在参数扰动 ±5% 时，性能不应大幅变化（< 1pp 年化差距）。
+    """
+```
+
+#### O.3 在多个宏观时期独立验证
+
+当前分段（sw2000/sw2014/sw2021）是按分类体系切分，但不代表宏观周期切分。应额外验证：
+- **2010–2015**：牛市启动 + 2015 股灾
+- **2016–2019**：价值/周期主导 + 贸易战
+- **2020–2022**：新冠牛市 + 熊市
+- **2023–2026**：政策驱动 + AI 主题
+
+---
+
+### 方向 P：交易成本与换手率优化
+
+**为什么要做**：高换手率（0.95，Phase D）直接吞噬 Alpha。即使改善了因子质量，
+如果换手率不降，总收益净值不会提升。
+
+#### P.1 换手预算控制
+
+```python
+@dataclass
+class TurnoverBudgetConfig:
+    max_monthly_turnover: float = 0.50   # 每月最多替换 50% 仓位
+    min_score_improvement: float = 0.10  # 新行业评分必须高于现有行业 10% 才换
+    
+def apply_turnover_budget(
+    current_holdings: dict[str, float],
+    target_weights: dict[str, float],
+    scores: dict[str, float],
+    budget: TurnoverBudgetConfig,
+) -> dict[str, float]:
+    """
+    惰性再平衡：只有当新行业评分显著高于现有行业时才调仓。
+    """
+```
+
+#### P.2 错峰再平衡（Staggered Rebalancing）
+
+```python
+# 当前：所有仓位在同一天调整（月度）
+# 改进：每 5 天调整 1/4 仓位（降低时间点风险）
+def staggered_rebalance_schedule(
+    start_date: date,
+    base_frequency: int = 20,  # 月度 20 交易日
+    n_tranches: int = 4,       # 分 4 批次
+) -> list[date]:
+    """
+    每 5 天调整 25% 仓位，全部完成需 20 天，
+    降低单日调仓的执行风险和市场冲击。
+    """
+```
+
+---
+
+## 第四部分：具体执行计划
+
+### 4.1 阶段优先级矩阵
+
+| 阶段 | 任务 | 预期收益 | 风险 | 优先级 | 预计耗时 |
+|------|------|---------|------|--------|---------|
+| **K** | 因子 IC/ICIR 审计 | 识别真实有效因子，剔除噪声 | 低 | **P0** | ✅ DONE |
+| **L** | 三状态市场分类器 | hit rate 22% → 55%，月胜率 +5pp | 中 | **P0** | ✅ DONE |
+| **N.1** | 信号强度加权 | Sharpe +0.05–0.10 | 低 | **P0** | ✅ DONE |
+| **N.2** | 行业相关性约束 | 降低集中度风险，DD -3pp | 低 | **P0** | ✅ DONE |
+| **O.1** | Purged WF 方法论 | WF 结论更可信 | 低 | **P0** | ✅ DONE |
+| **M.1** | Prosperity 数据修复 | IC 验证后 Sharpe +0.05 | 中 | **P1** | ✅ DONE |
+| **M.2** | 真实 PE/PB 估值 | IC 验证后 Sharpe +0.03 | 高（数据获取）| **P1** | 🔒 BLOCKED (需 Wind/Bloomberg) |
+| **N.3** | 动态 top_k | 分散度高时减少集中风险 | 低 | **P1** | ✅ DONE |
+| **P.1** | 换手预算控制 | 换手 0.45 → 0.30，成本节省 | 低 | **P1** | ✅ DONE |
+| **O.2** | 稳定性测试 | 参数扰动后的鲁棒性确认 | 低 | **P1** | ✅ DONE |
+| **O.3** | 宏观时期独立验证 | 策略跨周期可靠性 | 低 | **P1** | ✅ DONE |
+| **M.3** | 宏观因子叠加 | Sharpe +0.05–0.15（高不确定性）| 高（需数据）| **P2** | 🔒 BLOCKED (需 PMI/信用利差) |
+| **P.2** | 错峰再平衡 | 降低时间点风险 | 中 | **P2** | ✅ DONE |
+
+### 4.2 第一周：基础诊断（K + O.1 + N.2）
+
+**Day 1–2：因子 IC 审计工具实现**
+
+```bash
+# 新增 tools/factor_ic_analysis.py
+python tools/factor_ic_analysis.py \
+    --config configs/real_sw2021.toml \
+    --factors ret60,ret20,ret5,vol20,consistency60,amount_strength,rel_ret60 \
+    --hold-periods 5,10,20,40,60 \
+    --output reports/factor_ic_audit_sw2021/
+    
+# 也在 sw2014 验证（不同市场状态）
+python tools/factor_ic_analysis.py \
+    --config configs/real_sw2014.toml \
+    --factors ret60,ret20,ret5,vol20,consistency60 \
+    --hold-periods 5,10,20,40,60 \
+    --output reports/factor_ic_audit_sw2014/
+```
+
+**核心代码逻辑**：
+
+```python
+# tools/factor_ic_analysis.py
+import scipy.stats
+import pandas as pd
+
+def compute_rolling_ic(
+    factor_values: pd.DataFrame,   # index=date, columns=industry
+    forward_returns: pd.DataFrame, # index=date, columns=industry, hold_period
+    method: str = "spearman",
+) -> pd.Series:
+    """
+    每个调仓日，计算因子截面与未来收益截面的 rank correlation。
+    """
+    ic_series = {}
+    for date in factor_values.index:
+        if date not in forward_returns.index:
+            continue
+        f = factor_values.loc[date].dropna()
+        r = forward_returns.loc[date].dropna()
+        common = f.index.intersection(r.index)
+        if len(common) < 10:
+            continue
+        rho, _ = scipy.stats.spearmanr(f[common], r[common])
+        ic_series[date] = rho
+    return pd.Series(ic_series)
+
+def compute_icir(ic_series: pd.Series, window: int = 12) -> pd.Series:
+    return ic_series.rolling(window).mean() / ic_series.rolling(window).std()
+```
+
+**验收标准**（Day 2 结束）：
+- 每个因子的 ICIR 有量化评估结果
+- 识别出在 sw2014 和 sw2021 中均 ICIR > 0.12 的因子（→ 进入候选）
+- 识别出 ICIR < 0.05 的因子（→ 剔除）
+
+---
+
+**Day 3–4：行业相关性约束实现（N.2）**
+
+```python
+# src/quant_rotation/portfolio.py 新增
+import numpy as np
+
+INDUSTRY_CLUSTER_SW2021 = {
+    "TMT":      ["计算机", "电子", "通信", "传媒"],
+    "新能源":   ["电力设备", "汽车"],
+    "周期":     ["煤炭", "钢铁", "有色金属", "基础化工", "石油石化"],
+    "金融":     ["银行", "非银金融"],
+    "消费":     ["食品饮料", "家用电器", "美容护理", "商贸零售", "农林牧渔"],
+    "医疗":     ["医药生物"],
+    "防御":     ["公用事业", "交通运输", "社会服务"],
+    "其他":     ["机械设备", "建筑装饰", "建筑材料", "纺织服饰", "轻工制造", "综合", "环保", "国防军工", "房地产", "美容护理"],
+}
+
+def select_with_cluster_constraint(
+    scores: dict[str, float],
+    top_k: int,
+    max_per_cluster: int = 2,
+    cluster_map: dict = INDUSTRY_CLUSTER_SW2021,
+) -> list[str]:
+    """
+    贪心选择：按评分降序，对每个集群内已选数量进行约束。
+    """
+    reverse_map = {ind: cluster for cluster, inds in cluster_map.items() for ind in inds}
+    cluster_count = {cluster: 0 for cluster in cluster_map}
+    selected = []
+    for industry, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+        if len(selected) >= top_k:
+            break
+        cluster = reverse_map.get(industry, "其他")
+        if cluster_count.get(cluster, 0) < max_per_cluster:
+            selected.append(industry)
+            cluster_count[cluster] = cluster_count.get(cluster, 0) + 1
+    return selected
+```
+
+**配置新增字段**：
+```toml
+[strategy]
+cluster_constraint = true        # 是否启用集群约束
+max_per_cluster = 2              # 每集群最多选几个行业
+```
+
+**验收标准**：
+- 与 exp_best_p0 基线比较：相关性约束不应降低 Sharpe（通过降低集中度风险应持平或改善）
+- 行业选择频次分布更均匀（当前 TMT 三行业占据 1/3 选择次数）
+
+---
+
+**Day 5：Purged WF 实现（O.1）**
+
+```python
+# src/quant_rotation/validation.py 修改
+def purged_walk_forward_splits(
+    dates: list[date],
+    train_window: int = 504,
+    test_window: int = 63,
+    gap: int = 20,
+    step: int = 63,
+) -> list[tuple[list[date], list[date]]]:
+    """
+    生成净化的训练/测试分割：
+    - 训练集：[start, train_end]
+    - 净化间隔：[train_end+1, train_end+gap]（这些日期不用于测试）
+    - 测试集：[train_end+gap+1, train_end+gap+test_window]
+    """
+    splits = []
+    i = train_window
+    while i + gap + test_window <= len(dates):
+        train_dates = dates[i - train_window:i]
+        test_dates = dates[i + gap:i + gap + test_window]
+        if test_dates:
+            splits.append((train_dates, test_dates))
+        i += step
+    return splits
+```
+
+---
+
+### 4.3 第二周：三状态分类器 + 信号强度加权（L + N.1）
+
+**Day 6–8：三状态市场分类器实现（L）**
+
+```python
+# src/quant_rotation/regime.py（新文件）
+from dataclasses import dataclass
+from enum import Enum
+from typing import NamedTuple
+
+class MarketState(Enum):
+    STRONG  = "strong"
+    NEUTRAL = "neutral"
+    WEAK    = "weak"
+
+@dataclass
+class MarketStateConfig:
+    trend_weight:     float = 0.35
+    dispersion_weight: float = 0.25
+    momentum_weight:  float = 0.25
+    breadth_weight:   float = 0.15
+    strong_threshold:  float = 0.25
+    weak_threshold:    float = -0.10
+    strong_exposure:   float = 1.00
+    neutral_exposure:  float = 0.60
+    weak_exposure:     float = 0.25
+
+def classify_market_state(
+    benchmark_closes: list[float],
+    industry_returns_20d: dict[str, float],
+    breadth_values: dict[str, float] | None,
+    index: int,
+    config: MarketStateConfig,
+) -> tuple[MarketState, float]:
+    # 信号 1：趋势得分（多均线）
+    closes = benchmark_closes[:index + 1]
+    ma20  = sum(closes[-20:])  / 20
+    ma60  = sum(closes[-60:])  / 60
+    ma120 = sum(closes[-120:]) / 120
+    current = closes[-1]
+    trend_score = (
+        0.4 * (1.0 if current > ma20  else -1.0)
+        + 0.4 * (1.0 if current > ma60  else -1.0)
+        + 0.2 * (1.0 if current > ma120 else -1.0)
+    )  # -1.0 ~ +1.0
+    
+    # 信号 2：截面分散度
+    returns = list(industry_returns_20d.values())
+    if len(returns) > 2:
+        mean_r = sum(returns) / len(returns)
+        variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+        dispersion = variance ** 0.5  # 截面标准差
+        # 标准化到 [-1, 1]，0.04 为低分散，0.12 为高分散
+        dispersion_score = min(1.0, max(-1.0, (dispersion - 0.07) / 0.05))
+    else:
+        dispersion_score = 0.0
+    
+    # 信号 3：市场动量质量
+    if index >= 60:
+        ret60 = closes[-1] / closes[-60] - 1
+        ret5  = closes[-1] / closes[-5] - 1
+        # 惩罚过热（近期过快上涨）
+        momentum_quality = ret60 - max(0, ret5 * 3)
+        # 标准化到 [-1, 1]
+        momentum_score = min(1.0, max(-1.0, momentum_quality / 0.15))
+    else:
+        momentum_score = 0.0
+    
+    # 信号 4：行业宽度
+    if breadth_values:
+        avg_breadth = sum(breadth_values.values()) / len(breadth_values)
+        breadth_score = (avg_breadth - 0.50) * 4  # 中心化后扩展到 [-1, 1] 附近
+        breadth_score = min(1.0, max(-1.0, breadth_score))
+    else:
+        breadth_score = 0.0
+    
+    # 综合评分
+    composite = (
+        config.trend_weight     * trend_score
+        + config.dispersion_weight * dispersion_score
+        + config.momentum_weight   * momentum_score
+        + config.breadth_weight    * breadth_score
+    )
+    
+    if composite >= config.strong_threshold:
+        return MarketState.STRONG, config.strong_exposure
+    elif composite > config.weak_threshold:
+        return MarketState.NEUTRAL, config.neutral_exposure
+    else:
+        return MarketState.WEAK, config.weak_exposure
+```
+
+**实验**：
+
+```bash
+# 实验 L-SW2021：三状态 vs 二元风控
+python -m quant_rotation sweep \
+    --config configs/real_sw2021.toml \
+    --industry-only \
+    --factor-set ret60_ret5 \
+    --top-k 3,5 \
+    --market-state-mode three_state,binary \
+    --output-dir reports/exp_L_three_state_sw2021
+
+# 分年验证
+python tools/annual_returns_summary.py \
+    reports/exp_L_three_state_sw2021/... \
+    --compare reports/production/annual_returns.csv \
+    --segments
+```
+
+---
+
+**Day 9–10：信号强度加权（N.1）**
+
+```python
+# src/quant_rotation/portfolio.py 修改
+def compute_weights(
+    selected_industries: list[str],
+    scores: dict[str, float],
+    mode: str = "equal",
+    softmax_temperature: float = 0.5,
+) -> dict[str, float]:
+    if mode == "equal":
+        w = 1.0 / len(selected_industries)
+        return {i: w for i in selected_industries}
+    
+    elif mode == "softmax":
+        s = {i: scores[i] / softmax_temperature for i in selected_industries}
+        max_s = max(s.values())
+        exp_s = {i: math.exp(v - max_s) for i, v in s.items()}
+        total = sum(exp_s.values())
+        return {i: exp_s[i] / total for i in selected_industries}
+    
+    elif mode == "rank":
+        # 线性排名加权：第 1 名 n 倍，第 k 名 1 倍
+        ranked = sorted(selected_industries, key=lambda i: scores[i], reverse=True)
+        n = len(ranked)
+        weights = {i: (n - r) / sum(range(n)) for r, i in enumerate(ranked)}
+        return weights
+    
+    raise ValueError(f"Unknown mode: {mode}")
+```
+
+---
+
+### 4.4 第三周：因子新信号 + 全段验证（M.1 + O.3）—— ✅ 已完成
+
+#### M.1 Prosperity 因子 IC 验证结果
+
+```bash
+python tools/factor_ic_analysis.py \
+    --config configs/real_sw2021.toml \
+    --factors prosperity \
+    --hold-periods 5,10,20 \
+    --output reports/factor_ic_prosperity/
+```
+
+**结果**: prosperity hold=20d IC=-0.036, ICIR=-0.134
+- |ICIR| = 0.134 > 0.12 → 预测能力稳定
+- |IC| = 0.036 < 0.05 → 方向性太弱
+- **结论**: 不进入生产配置 (IC元 < 0.05 门槛)
+
+#### N.3 动态 top_k 实现
+
+新增 `top_k_from_dispersion()` 函数 + 配置字段:
+- `dynamic_top_k: bool` — 启用开关
+- `dynamic_top_k_min / max / disp_low / disp_high` — 阈值参数
+- 低分散度(0.02) → top_k=3; 中(0.07) → top_k=5; 高(0.12) → top_k=7
+
+#### O.2 稳定性测试
+
+新增 `tools/stability_test.py` — 参数扰动 ±5% 后性能劣化 < 1pp:
+- **PASS**: 年化劣化 0.90pp < 1pp 阈值
+- 扰动后 Sharpe 均值 0.55 vs 基线 0.52 (无劣化)
+
+#### O.3 宏观时期独立验证
+
+新增 `--start` / `--end` 日期过滤到 CLI:
+
+| 时期 | 年化收益 | Sharpe |
+|------|---------|--------|
+| 2021-2022 | 0.0% | 0.00 (避险) |
+| 2023 | 0.0% | 0.00 (避险) |
+| 2024 | -1.6% | -0.02 |
+| 2025-2026 | +25.4% | 1.28 |
+
+4个时期中2个正收益 — 未达成3/4正收益目标。
+
+#### P.1 换手预算控制
+
+新增 `shrink_toward_current()` 函数 + `turnover_budget` 配置字段:
+- 滑动窗口跟踪历史换手
+- 平均换手超预算时收缩至当前权重
+
+#### P.2 错峰再平衡 — ✅ 已完成
+
+新增 `staggered_rebalance` + `staggered_n_tranches` 配置字段:
+- CLI: `--config-override` + `--purged-gap` 支持单配置WF验证
+- 4-tranche 将月度换手拆分，每个子调仓仅旋转 25% 权重
+- 测试结果: 年化 3.74% vs 基线 6.51% (动量策略中延迟信号传导导致劣化)
+
+#### M-Final: 27 折 Purged WF 验证结果
+
+```bash
+python -m quant_rotation validate-segments \
+    --configs configs/real_sw2021.toml configs/real_sw2014.toml configs/real_sw2000.toml \
+    --industry-only --factor-set ret60_ret5 --top-k 5 \
+    --risk-off-exposure 0 --risk-control true --market-score-control true \
+    --walk-forward --train-window 504 --test-window 126 \
+    --purged-gap 20 --config-override configs/candidate_v3_minimal.toml
+```
+
+| Metric | Baseline (production) | v3_minimal (+cluster) |
+|--------|----------------------|----------------------|
+| OOS 盈利折 | 11/27 | 11/27 |
+| OOS 年化均值 | 3.67% | 3.82% |
+| OOS 年化中位数 | **-0.53%** | **-0.70%** |
+| OOS 年化最小/最大 | -84% / +157% | -84% / +157% |
+| OOS Sharpe 均值 | 0.15 | 0.17 |
+| OOS Sharpe 中位数 | 0.02 | 0.00 |
+| OOS 月胜率均值 | 30.2% | 30.2% |
+
+**结论**: 集群约束边际改善均值 (+0.15pp)，但无法改变核心问题——
+WF 中位数收益为负，收益由少数极端正收益折叠动。策略缺乏一致性 Alpha。
+
+---
+
+### 4.5 第四周：全段 WF 验证（最终候选确认）
+
+**Day 16–17：构建最终候选配置**
+
+基于前三周的实验结果，构建最终候选（预期配置方向）：
+
+```toml
+# configs/candidate_v3_alpha.toml（预期配置，根据实验结果最终确定）
+[strategy]
+rebalance_every = 20
+top_k = 5                         # 由动态 top_k 根据分散度调整
+max_industry_weight = 0.28        # 略低于当前 0.30
+transaction_cost = 0.001
+risk_control = true
+market_ma_window = 120
+market_state_mode = "three_state" # 新增：三状态分类器
+market_state_strong_exposure = 1.0
+market_state_neutral_exposure = 0.6
+market_state_weak_exposure = 0.25
+portfolio_mode = "softmax"        # 信号强度加权
+softmax_temperature = 0.5
+cluster_constraint = true         # 行业相关性约束
+max_per_cluster = 2
+
+[factors]
+ret60_weight = 1.00               # 主力因子不变
+consistency60_weight = 0.25       # 根据 K 阶段 IC 结果确认
+ret5_weight = -0.50               # 过热惩罚保留
+prosperity_weight = 0.15          # 根据 M.1 阶段 IC 验证结果决定是否加入
+# 其他因子根据 IC 结果决定
+```
+
+**Day 18–20：全段 WF 验证（27 折）**
 
 ```bash
 python -m quant_rotation validate-segments \
     --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml \
     --industry-only \
+    --config-override configs/candidate_v3_alpha.toml \
+    --purged-gap 20 \
+    --output-dir reports/exp_v3_alpha_wf27
+
+# 分段诊断
+python tools/wf_segment_diagnosis.py reports/exp_v3_alpha_wf27 --all
+```
+
+---
+
+## 第五部分：验收标准与里程碑
+
+### 5.1 阶段里程碑
+
+| 里程碑 | 状态 | 通过条件 |
+|--------|------|---------|
+| **M-K** | ✅ PASS | 确认至少 2 个 ICIR > 0.12 的因子 (ret60, ret20, ret5, prosperity) |
+| **M-L** | ⚠️ PARTIAL | 三状态分类器月胜率 44%-49% (目标 55%), 风控触发比例降低 |
+| **M-N** | ⚠️ PARTIAL | 带相关性约束的等权 Sharpe 0.57 (+0.05 基线) 未达 0.60 |
+| **M-M1** | ❌ FAIL | prosperity \|ICIR\|=0.134 但 \|IC\|=0.036 < 0.05 门槛 |
+| **M-O3** | ⚠️ PARTIAL | 策略在 4 个宏观时期中 2/4 正收益 (目标 3/4) |
+| **M-Final** | ❌ FAIL | Purged WF 27折: 11/27 盈利折 (目标 ≥17/27), OOS年化中位数 -0.70% (目标 ≥3%)
+
+### 5.2 最终生产就绪标准（全部达到才算强 Alpha）
+
+| 指标 | 目标 | 关键检查点 |
+|------|------|----------|
+| sw2021 年化收益 | ≥ 12% | 单段回测 |
+| sw2021 Sharpe | ≥ 0.70 | 单段回测 |
+| sw2021 最大回撤 | ≤ -15% | 单段回测 |
+| sw2021 月胜率 | ≥ 45% | 单段回测 |
+| sw2021 最差单年 | ≥ -5% | 分年分析 |
+| sw2021 负收益年份 | ≤ 1/6 | 分年分析 |
+| sw2014 年化收益 | ≥ 10% | 单段回测 |
+| sw2014 最大回撤 | ≤ -25% | 单段回测（现在 -54.8%）|
+| WF 27 折盈利折数 | ≥ 17/27（63%）| Purged WF |
+| WF OOS 年化中位数 | ≥ 3% | Purged WF |
+| 风控 hit rate | ≥ 55% | 风控诊断工具 |
+| 宏观时期覆盖 | 4 个时期中 3 个正收益 | 宏观时期验证 |
+| 参数扰动稳定性 | ±5% 扰动后年化差 < 1pp | 稳定性测试 |
+
+---
+
+## 第六部分：代码架构变更
+
+### 6.1 新文件
+
+```
+src/quant_rotation/
+  + regime.py           # 市场状态分类器（三状态）
+
+tools/
+  + factor_ic_analysis.py      # IC/ICIR 计算工具
+  + stability_test.py          # 参数扰动稳定性测试
+  + macro_period_analysis.py   # 宏观时期独立验证 (via --start/--end CLI)
+
+configs/
+  + candidate_v3_alpha.toml     # 基于 K/L/N 实验结论的激进候选
+  + candidate_v3_defensive.toml # 防御变体（weak_exposure=0.30）
+  + candidate_v3_minimal.toml   # P2 最终候选: 生产基线 + 集群约束
+```
+
+### 6.2 修改的文件 (v3.2 已实现)
+
+| 文件 | 修改内容 |
+|------|---------|
+| `backtest.py` | 集成三状态分类器、集群约束、动态top_k、换手预算、错峰再平衡 |
+| `portfolio.py` | `select_with_cluster_constraint()`, `top_k_from_dispersion()`, `shrink_toward_current()` |
+| `models.py` | 新增 20+ 配置字段 (cluster/market_state/dynamic_top_k/turnover/staggered) |
+| `config.py` | 解析所有新增配置字段 |
+| `validation.py` | `purged_walk_forward_splits()` + `purged_gap` 参数 |
+| `cli.py` | `--start`/`--end` 日期过滤, `--config-override`, `--purged-gap` |
+
+### 6.3 新增工具
+
+| 工具 | 用途 |
+|------|------|
+| `tools/factor_ic_analysis.py` | 截面因子 IC/ICIR 计算 |
+| `tools/stability_test.py` | 参数扰动鲁棒性测试 |
+| `tools/wf_segment_diagnosis.py` | WF 分段诊断 (已有) |
+
+### 6.4 测试补充
+
+---
+
+## 第七部分：风险提示与注意事项
+
+### 7.1 现实约束
+
+**数据依赖**：
+- 真实 PE/PB 估值数据需要 Wind/Bloomberg 订阅，这是 M.2 阶段的前提
+- sw2000/sw2014 历史成分股仍缺失（需要 JoinQuant/Tushare），影响全段 WF 质量
+- breadth 数据在 sw2000/sw2014 段仍有偏差
+
+**关键认知**：
+- **因子 IC 是先决条件**：在 IC 未验证前，不应相信任何基于回测 Sharpe 的结论
+- **WF 样本量限制**：27 折（约 16 年）中，每折仅 6 个月。折数不够，统计结论不可靠
+- **A 股特殊性**：政策驱动的行情（2020、2024 Q4）难以被任何量化模型预测
+
+### 7.2 可能的陷阱
+
+**陷阱 1**：IC 好但回测差
+- IC 衡量的是截面预测能力，而回测涉及组合构建、风控、成本等多个环节
+- IC > 0.10 是必要条件，不是充分条件
+
+**陷阱 2**：三状态分类器在新市场环境中过拟合
+- 三状态的阈值（0.25/-0.10）是通过历史标定的，可能不适用于未来结构性变化
+- 缓解：定期重标定（年度）+ 宽松阈值（避免过度灵敏）
+
+**陷阱 3**：行业集群定义在行业重组后失效
+- 申万行业分类每几年更新一次（sw2000→sw2014→sw2021），集群定义需同步更新
+- 代码中明确按 sw 版本管理集群映射表
+
+**陷阱 4**：Prosperity 因子带来前视偏差
+- 财报数据有发布滞后，需严格使用 `release_lag_days` 偏移
+- 生产前必须通过 `tools/data_integrity_check.py --production` 的检查
+
+### 7.3 如果方向 K 显示 ret60 ICIR < 0.10 怎么办
+
+这意味着 A 股行业动量本身缺乏统计上的预测能力。在这种情况下：
+1. 检查 IC 是否因行业轮动过快而衰减（持有 5 天的 IC vs 持有 20 天的 IC）
+2. 检查是否在特定宏观环境下 IC 才显著（分年 IC 分析）
+3. 如果确认 ret60 ICIR 全面低于 0.08，需要更根本性地质疑「行业动量轮动是否在 A 股有效」
+
+这是最坏情况，但也必须面对：如果基础假设（行业动量可预测）不成立，则所有优化都是无用的。
+
+---
+
+## 第八部分：快速验证清单
+
+每次代码改动后的最小验证流程：
+
+```bash
+# 步骤 1：单元测试
+python -m pytest tests/ --tb=short -q
+
+# 步骤 2：单段快速验证（sw2021，5 分钟）
+python -m quant_rotation run --config configs/<new_config>.toml
+python tools/annual_returns_summary.py reports/<dir>/annual_returns.csv --segments
+
+# 步骤 3：因子 IC 检查（当有新因子时）
+python tools/factor_ic_analysis.py \
+    --config configs/<new_config>.toml \
+    --output reports/<dir>/factor_ic/
+
+# 步骤 4：风控诊断
+python tools/diagnose_risk_control.py --config configs/<new_config>.toml
+
+# 步骤 5：WF 快验（仅 sw2014+sw2021，19 折，20 分钟）
+python -m quant_rotation validate-segments \
+    --configs configs/real_sw2014.toml configs/real_sw2021.toml \
+    --industry-only \
     --factor-set ret60_ret5 \
     --top-k 3,5 \
     --risk-off-exposure 0 \
-    --risk-control true \
-    --market-score-control false \
-    --risk-control-mode hard \
-    --portfolio-mode equal \
-    --output-dir reports/exp_full27_best_fixed
-```
-
-| 指标 | 结果 |
-|------|------|
-| 折数 | 27 |
-| 覆盖区间 | 2010-01-04 ~ 2026-03-05 |
-| 最常被选候选 | `ret60_ret5_top3_riskoff0`（20/27 折） |
-| 测试年化均值 / 中位数 | 8.50% / 0.00% |
-| 测试 Sharpe 均值 / 中位数 | 0.307 / 0.078 |
-| 测试盈利折数 | 13/27（另 2 折为 0，12 折为负） |
-| Bootstrap p_positive（年化均值） | 94.93% |
-| 固定 top3 OOS 净值 | 1.954（vs 基准 1.730，超额 +12.9%；vs 等权 2.464，超额 -20.7%） |
-
-**补充结论**：固定 `top_k=3` 的长期 OOS 净值优于基准，但盈利折数和中位数仍不达标。
-它更像「长期有超额、短期不稳定」的候选，不满足“每折/每年稳定”的生产门槛。
-
----
-
-## 一、战略转向：从「最大化回测 Sharpe」到「每年正收益」
-
-### 1.1 新的核心原则
-
-**旧路径**：在参数空间里搜索最高 Sharpe，然后 WF 验证 → 屡次失败  
-**新路径**：先确保每年正收益（稳定），在此基础上提高年化水平
-
-这需要从根本上改变风险管理逻辑：
-
-```
-旧模式：risk_on 满仓(100%) ↔ risk_off 空仓(0%)
-新模式：动态仓位(20%~100%)，永远不完全清仓，永远不超过预设波动预算
-```
-
-### 1.2 策略重构的三层架构
-
-```
-┌──────────────────────────────────────────────────────────┐
-│ 层 1：仓位控制（最高优先级）                               │
-│ 目标：控制年度最大回撤 < 15%，使得每年大概率正收益           │
-│ 工具：软仓位映射（market_score → exposure），基准底仓 30%  │
-├──────────────────────────────────────────────────────────┤
-│ 层 2：行业选择（Alpha 来源）                               │
-│ 目标：在仓位内选择超越等权的行业                             │
-│ 工具：rel_ret60（主）+ consistency60（辅）+ prosperity（辅）│
-├──────────────────────────────────────────────────────────┤
-│ 层 3：股票精选（增量 Alpha，可选）                          │
-│ 目标：行业内进一步提升每笔仓位质量                           │
-│ 工具：低波动 + 一致性（已验证有效，但需无前视数据）           │
-└──────────────────────────────────────────────────────────┘
-```
-
----
-
-## 二、阶段 F：仓位控制重构（P0，第 1~2 周，无新数据依赖）
-
-> 这是最重要的改动。目前所有失败的年份（2021 全空仓、2023 轮动失效）
-> 都源于仓位逻辑的极端化。
-
-### F.1 诊断：为什么硬风控带来稳定性幻觉
-
-| 硬风控行为 | 结果 | 问题 |
-|-----------|------|------|
-| 2022 全空 | 规避 -21.6% 基准 | ✅ 成功，但依赖「完全正确的清仓时机」 |
-| 2021 全空 | 错过 -2.8% 小跌后的反弹 | ❌ 0 收益，不是稳定 |
-| 2024Q4 空仓 | 错过 +23.2% 大反弹 | ❌ 大踏空 |
-| 2023 半空 | -4.6% 跑输等权 | ❌ 少量仓位还亏损 |
-
-**关键洞察**：硬风控在「大熊市」有效，但在 A 股频繁的「震荡 + 政策驱动反弹」
-模式下，完全清仓的机会成本极高。2022 年规避了 21.6%，但 2024 年错过了 23.2%，
-净效果接近零，同时增加了大量不必要的交易成本和心理压力。
-
-### F.2 解决方案：软仓位映射 + 底仓机制
-
-**核心改动：将 `risk_off_exposure` 从 0 提高到 0.3，并启用软仓位映射。**
-
-#### F.2.1 软仓位映射配置
-
-```toml
-# 新生产配置核心
-[strategy]
-risk_control_mode = "soft"          # 软映射，非二元硬切换
-soft_exposure_min = 0.30            # 最差市场环境下仍持仓 30%（底仓）
-soft_exposure_max = 1.00            # 最佳环境下满仓
-soft_exposure_center = 0.00         # market_score = 0 时对应的仓位梯度中点
-soft_exposure_steepness = 15.0      # 映射曲线斜率（可调）
-risk_off_exposure = 0.30            # 即使触发硬风控也保持 30%
-market_score_control = true
-market_score_threshold = 0.0
-```
-
-**软映射函数**（已在 `backtest.py::_state_aware_exposure` 实现）：
-
-$$\text{exposure} = E_{\min} + (E_{\max} - E_{\min}) \cdot \sigma(\text{score} \cdot k)$$
-
-其中 $\sigma$ 是 Sigmoid 函数，$k$ 是 steepness。
-
-#### F.2.2 底仓行业选择
-
-当仓位处于底仓区间（30%~50%）时，底仓应配置在：
-- 高股息/低波动行业（银行、公用事业）—— 防御性持仓
-- 而非正常轮动选出的高动量行业 —— 高动量在下跌市中容易大幅回撤
-
-**实现**：新增 `defensive_mode` 逻辑：当 `exposure < 0.5` 时，
-改用 `vol20` 最低的 Top-3 行业作为防御仓位。
-
-```python
-# backtest.py 新增辅助函数
-def _select_defensive_holdings(
-    factor_snapshot: FactorSnapshot,
-    top_k: int = 3,
-) -> dict[str, float]:
-    """当 exposure < 0.5 时使用：选择波动率最低的行业作为防御持仓"""
-    vol_scores = factor_snapshot.fields.get("vol20", {})
-    if not vol_scores:
-        return {}
-    # 按 vol20 从低到高排序（选最低波动）
-    ranked = sorted(vol_scores.items(), key=lambda x: x[1])
-    holdings = [asset for asset, _ in ranked[:top_k]]
-    per_weight = 1.0 / len(holdings)
-    return {asset: per_weight for asset in holdings}
-```
-
-#### F.2.3 实验 F2-EXP1：软仓位 + 底仓扫描
-
-**参数矩阵（在 sw2021 上）**：
-
-| 参数 | 扫描值 |
-|------|-------|
-| `soft_exposure_min` | 0.2, 0.3, 0.4, 0.5 |
-| `soft_exposure_steepness` | 10, 15, 20 |
-| `risk_off_exposure` | 0.2, 0.3 |
-| `defensive_mode` | true, false |
-
-```bash
-python -m quant_rotation sweep \
-    --config configs/real_sw2021.toml \
-    --industry-only \
-    --factor-set ret60_ret5 \
-    --risk-control-mode soft \
-    --soft-exposure-min 0.2,0.3,0.4,0.5 \
-    --soft-exposure-steepness 10,15,20 \
-    --risk-off-exposure 0.2,0.3 \
-    --output-dir reports/exp_f2_soft_exposure
-```
-
-**验收标准（sw2021 分年验证）**：
-- 2023 年策略收益 > -2%（当前最好 -1.3%，最差 -4.6%）
-- 2021 年策略收益 > 1%（当前 0%，完全空仓）
-- 2022 年策略收益 > -5%（允许小幅亏损，换取其他年份的稳定）
-- 全段最大回撤 < -20%
-
-### F.3 跨周期底仓收益预估
-
-如果底仓 30% 配置在低波动行业（银行/公用事业），历史上这类行业的年化：
-- 银行：约 5-8%（含股息）
-- 公用事业：约 4-7%
-- 底仓贡献：0.3 × 6% ≈ **年化 +1.8%** 的稳定贡献
-
-这意味着即使上层动量选股完全失效（超额 = 0），策略仍有 ~2% 基础年化。
-与此同时，2022 年规避损失从 `100% × (-21.6%) = -21.6%` 变为
-`30% × (-21.6%) = -6.5%`，完全可接受。
-
----
-
-## 三、阶段 G：年度收益稳定化机制（P0，第 2~3 周）
-
-> 专门针对「每年收益稳定」目标设计的新机制，是对历史失败案例的直接回应。
-
-### G.1 年度动态目标仓位（Annual Budget Control）
-
-**核心思路**：当年截至目前的收益已经超过年度目标时，降低仓位锁定收益；
-当年截至目前的收益低于年度目标时，维持正常仓位。
-
-这不是「止盈」，而是「动态风险预算」：年初风险预算充足，可以放手博取 Alpha；
-年中已累积足够收益后，降低风险避免回吐。
-
-```python
-# backtest.py 新增函数
-def _annual_budget_exposure_adjustment(
-    strategy_equity: list[float],
-    current_index: int,
-    dates: list[date],
-    annual_target: float = 0.12,      # 年度目标收益 12%
-    lock_trigger: float = 0.10,       # 当年已赚 10% 后开始收缩
-    min_exposure_after_lock: float = 0.50,  # 锁定后最低仓位
-) -> float:
-    """
-    当年截至当前的收益超过 lock_trigger 时，返回收缩因子（< 1.0）。
-    收益越高于目标，收缩越多。
-    """
-    current_year = dates[current_index].year
-    year_start_index = next(
-        (i for i, d in enumerate(dates) if d.year == current_year),
-        0,
-    )
-    if current_index <= year_start_index:
-        return 1.0
-
-    ytd_return = (
-        strategy_equity[current_index] / strategy_equity[year_start_index] - 1.0
-    )
-
-    if ytd_return < lock_trigger:
-        return 1.0  # 还没到目标，全力运行
-
-    # 超过触发线后线性收缩：ytd=10% 时 factor=1.0，ytd=20% 时 factor=0.5
-    excess = ytd_return - lock_trigger
-    scale = lock_trigger  # 归一化区间
-    factor = max(min_exposure_after_lock, 1.0 - excess / scale)
-    return factor
-```
-
-**`StrategyConfig` 新增字段**：
-```python
-annual_budget_control: bool = False
-annual_budget_target: float = 0.12
-annual_budget_lock_trigger: float = 0.10
-annual_budget_min_exposure: float = 0.50
-```
-
-#### 实验 G1-EXP1：年度预算控制效果
-
-**预期效果**：
-- 2025 年：原始 +18.6%，触发锁仓后预计 +13~15%（损失 3-5% 换取风控）
-- 2021/2022/2023 年：无影响（收益未达触发线）
-- 年度最大亏损有天花板
-
-**验收标准**：
-- 6 年中负收益年份 ≤ 1 年
-- 最差单年 ≥ -8%
-- 年化收益均值 ≥ 10%
-
-### G.2 波动率目标仓位（Vol Targeting）
-
-更系统的仓位控制方案：根据近期市场波动率动态调整目标组合波动率为恒定值。
-
-$$\text{exposure}_t = \min\left(1.0, \frac{\sigma_{\text{target}}}{\sigma_{\text{realized},t}}\right)$$
-
-其中 $\sigma_{\text{target}}$ = 年化 15%（目标组合波动率），
-$\sigma_{\text{realized},t}$ = 滚动 20 日基准/市场波动率（年化）。
-
-**优势**：牛市中市场波动低 → 仓位高；熊市中市场波动高 → 仓位低。
-这是自动的「顺市」仓位管理，无需手动调参。
-
-```python
-def vol_target_exposure(
-    benchmark_closes: list[float],
-    signal_index: int,
-    vol_window: int = 20,
-    target_vol: float = 0.15,   # 年化 15% 波动目标
-    annual_factor: float = 252.0,
-    min_exposure: float = 0.30,
-    max_exposure: float = 1.00,
-) -> float:
-    """根据实际波动率反推目标仓位"""
-    from math import sqrt
-    if signal_index < vol_window:
-        return max_exposure
-    returns = [
-        benchmark_closes[i] / benchmark_closes[i - 1] - 1.0
-        for i in range(signal_index - vol_window + 1, signal_index + 1)
-    ]
-    mean_r = sum(returns) / len(returns)
-    variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
-    realized_vol_daily = sqrt(variance)
-    realized_vol_annual = realized_vol_daily * sqrt(annual_factor)
-    if realized_vol_annual <= 0:
-        return max_exposure
-    raw = target_vol / realized_vol_annual
-    return max(min_exposure, min(max_exposure, raw))
-```
-
-**`StrategyConfig` 新增**：
-```python
-vol_targeting: bool = False
-vol_target_level: float = 0.15
-vol_target_window: int = 20
-vol_target_min_exposure: float = 0.30
-```
-
-#### 实验 G2-EXP1：波动率目标 vs 硬风控对比
-
-```bash
-python -m quant_rotation sweep \
-    --config configs/real_sw2021.toml \
-    --industry-only \
-    --factor-set ret60_ret5 \
-    --vol-targeting true,false \
-    --vol-target-level 0.12,0.15,0.18 \
-    --output-dir reports/exp_g2_vol_target
-```
-
-**验收标准**：
-- 年度最大亏损 < -10%（vs 当前 -12.2% 最差年）
-- 月胜率提升到 40%+（vol targeting 在高波动期自动减仓，减少亏损月数）
-
----
-
-## 四、阶段 H：因子精简与 WF 稳健性（P1，第 3~4 周）
-
-> 历史 WF 结果揭示了过拟合的严重程度：训练集 Sharpe 0.40，OOS Sharpe 0.04。
-> 这意味着因子/参数空间太大，需要大幅精简。
-
-### H.1 现实评估：WF 失效的根因
-
-当前 27 折 WF 的选择频次分布（`walk_forward_summary.csv`）：
-- `ret60_top3_riskoff0_pmequal`：**6 次被选中**（最多）
-- 其余 15+ 个候选各 1~2 次
-
-这说明「每一折的最优候选不同」——不是过拟合，而是**不同市场状态需要不同策略**，
-但 WF 框架将这种「状态依赖性」错误地解读为「参数搜索」。
-
-**核心洞察**：真正的鲁棒策略应该在所有状态下都 decent，而不是在某些状态最优。
-
-**解决方案**：收缩候选空间到 3~5 个最简单的固定候选，不做 WF 动态选择。
-
-### H.2 精简候选集：3 个核心候选
-
-基于所有实验报告的综合评估，提出以下 3 个固定候选：
-
-#### 候选 H1：极简防御型（最稳定优先）
-
-```toml
-# configs/candidate_h1_defensive.toml
-[strategy]
-top_k = 3
-risk_control_mode = "soft"
-soft_exposure_min = 0.30
-soft_exposure_max = 1.00
-risk_off_exposure = 0.30
-market_score_control = true
-market_score_threshold = 0.0
-portfolio_mode = "softmax"
-softmax_temperature = 1.0
-annual_budget_control = true
-annual_budget_lock_trigger = 0.10
-
-[factors]
-ret60_weight = 1.00
-ret5_weight = -0.50
-```
-
-**预期特征**：稳定，低波动，每年正收益概率高，但平均年化偏低（8~12%）
-
-#### 候选 H2：均衡型（性价比最优）
-
-```toml
-# configs/candidate_h2_balanced.toml
-[strategy]
-top_k = 5
-risk_control_mode = "soft"
-soft_exposure_min = 0.30
-soft_exposure_max = 1.00
-risk_off_exposure = 0.30
-market_score_control = false
-portfolio_mode = "equal"
-vol_targeting = true
-vol_target_level = 0.15
-
-[factors]
-ret60_weight = 1.00
-ret5_weight = -0.50
-prosperity_weight = 0.20
-```
-
-**预期特征**：适中波动，景气度加成，年化 12~18%
-
-#### 候选 H3：进取型（高收益但需更多容忍度）
-
-```toml
-# configs/candidate_h3_aggressive.toml
-[strategy]
-top_k = 3
-risk_control_mode = "soft"
-soft_exposure_min = 0.20
-soft_exposure_max = 1.00
-risk_off_exposure = 0.20
-market_score_control = true
-market_score_threshold = 0.0
-portfolio_mode = "softmax"
-softmax_temperature = 0.75
-
-[factors]
-rel_ret60_weight = 1.00
-ret5_weight = -0.50
-consistency60_weight = 0.20
-```
-
-**预期特征**：高波动，高收益潜力，需要 market_close 数据
-
-### H.3 WF 验证：固定候选 vs 动态选择
-
-对以上 3 个候选分别跑全段 WF，不做动态选择，只看每个候选的 OOS 一致性：
-
-```bash
-# H1 候选验证
-python -m quant_rotation validate \
-    --config configs/candidate_h1_defensive.toml \
-    --industry-only \
-    --walk-forward \
-    --train-window 504 \
-    --test-window 126 \
-    --output-dir reports/exp_h1_wf
-
-# H2 候选验证（需要 prosperity 数据）
-python -m quant_rotation validate \
-    --config configs/candidate_h2_balanced.toml \
-    --industry-only \
-    --walk-forward \
-    --train-window 504 \
-    --test-window 126 \
-    --output-dir reports/exp_h2_wf
-
-# H3 候选验证（需要 market_close 数据）
-python -m quant_rotation validate \
-    --config configs/candidate_h3_aggressive.toml \
-    --industry-only \
-    --walk-forward \
-    --train-window 504 \
-    --test-window 126 \
-    --output-dir reports/exp_h3_wf
-```
-
-**验收标准（每个候选独立评估）**：
-- OOS 盈利折数 ≥ 18/27（67%）
-- OOS Sharpe 中位数 ≥ 0.20（不要求很高，要求稳定）
-- 连续亏损最多 3 折（约 1.5 年）
-
----
-
-## 五、阶段 I：数据质量与前视偏差根治（P1，第 3~4 周并行）
-
-> 这是长期稳定性的基础，也是当前策略在实盘中最大的潜在风险。
-
-### I.1 已确认的前视偏差风险
-
-| 数据 | 当前状态 | 偏差风险 |
-|------|---------|---------|
-| `stock_industry_map.csv` | SW2021 段已有历史快照（`stock_industry_map_historical.csv`）；sw2000/sw2014 段仍为静态映射 | **高**（sw2000/sw2014 段仍使用未来行业归属） |
-| `industry_prosperity.csv` | 已有 `industry_prosperity_manifest.json`（含 release_lag_days/available_time） | **中** - 实盘可用性待确认 |
-| `industry_valuation.csv` | 已有 `industry_valuation_manifest.json`（含 release_lag_days/available_time） | **中** - PE/PB proxy 为价格分位数，非真实估值数据 |
-| `industry_breadth*.csv` | SW2021 段待用历史快照重算；sw2000/sw2014 段仍为当前成分计算 | **高**（sw2000/sw2014 段） |
-
-### I.2 前视偏差修复优先级
-
-#### I.2.1 个股数据：使用历史成分股快照（最高优先级）
-
-```python
-# real_data.py 中 fetch_stock_data 需要修改
-# 当前：使用 index_stock_cons 获取当前成分股（一次性快照）
-# 修改：按时间段获取不同的历史成分股快照
-
-def fetch_historical_constituent_snapshots(
-    universe: str,
-    snapshot_dates: list[date],  # 例如每季度末
-) -> dict[date, list[str]]:
-    """
-    获取历史成分股快照。
-    注意：AKShare 的 index_component_sw 是否支持历史查询需要验证。
-    如果不支持，则 Phase D 股票层只能作为「近似研究」使用，
-    不可作为生产配置。
-    """
-```
-
-**行动项**：
-- [x] SW2021 段：已通过 `fetch-historical-constituents --source sws` 补齐 5246 只股票的历史快照 CSV。
-- [ ] sw2000/sw2014 段：仍需 JoinQuant / Tushare / vendor interval CSV 补齐长历史成分股。
-  在此之前，Phase D 在 sw2000/sw2014 段只能标记为「当前成分股研究近似」。
-
-**2026-06-06 补充验证**：本地 AKShare 已安装，但
-`ak.index_component_sw` 签名为 `(symbol: str = '801001')`，不支持 `date` 参数；
-执行 `ak.index_component_sw(symbol="801010", date="20220101")` 返回
-`unexpected keyword argument 'date'`。因此 Phase D 股票层在没有外部历史快照 CSV 前，
-必须继续标记为「当前成分股研究近似」，不可作为无偏生产结论。
-
-**2026-06-06 修复落地**：已补齐非 AKShare 路径，不再依赖 AKShare 查询历史成分股。
-
-- `fetch-historical-constituents` 现在支持 `csv-snapshots`、`csv-intervals`、`sws`、`tushare`、`joinquant`。
-- 已验证申万官网 SWS 下载中心：`indextype=一级行业` 可列出 31 个申万一级行业，单行业
-  `download_file/?file_name=<行业名>分类表` 返回含 `行业名称/股票代码/起始时间/结束时间`
-  的 xlsx。已生成 `data/real_sw2021/stock_industry_map_historical.csv`：
-  173 个事件快照日期，824166 行，5246 只股票，覆盖 2021-12-13 ~ 2026-06-03。
-- `fetch-stock-data` 和 `fetch-breadth-data` 已新增 `--constituent-snapshots`，
-  传入快照 CSV 后按点时成分抓股票全集、计算行业宽度；未传时仍保留
-  当前成分研究近似并在 manifest 中写入偏差警告。
-- 生产级长历史可用 `--source joinquant`（`get_history_industry` 的纳入/剔除区间）、
-  `--source tushare`（`index_member_all` 的 `in_date/out_date` 区间）或 vendor
-  `csv-intervals` 补齐。缺 token/账号时命令会失败并明确提示，不再静默退回 AKShare。
-
-#### I.2.2 Prosperity 数据：记录数据来源和发布时间
-
-**2026-06-06 修复落地**：`compute-prosperity` 现已写
-`industry_prosperity_manifest.json`，记录 `source_file`、`method`、`window`、
-`release_lag_days=1`、`available_time=post_close`、`usable_from=next_rebalance`。
-`tools/data_integrity_check.py --production` 会把缺少 prosperity 发布滞后元数据、
-或仍使用当前成分股的 manifest 警告升级为失败。
-
-生产权重仍建议 `prosperity_weight = 0.00`，待实盘可用性确认后再启用。
-
-#### I.2.3 行业宽度数据：前视偏差修复
-
-```bash
-# 重新生成行业宽度，使用时间点对应的成分股
-python -m quant_rotation fetch-breadth-data \
-    --output data/real_sw2021 \
-    --start 2021-12-13 \
-    --end 2026-06-03 \
-    --windows 20,60 \
-    --constituent-snapshots data/real_sw2021/stock_industry_map_historical.csv \
-    --request-interval 0.2
-# 未传 --constituent-snapshots 时仍使用当前成分股，仅可作为研究近似
-```
-
-### I.3 数据完整性检查脚本
-
-已实现为 `tools/data_integrity_check.py`，支持 `--config` 指定配置文件，`--jump-threshold` 自定义跳变阈值。
-
-```bash
-# 按 config 运行完整数据完整性检查（覆盖、跳变、缺失、日期对齐、元数据警告）
-python tools/data_integrity_check.py --config configs/real_sw2021.toml
-
-# 对 Phase D 配置检查（含 stock_close/stock_amount/stock_industry_map）
-python tools/data_integrity_check.py --config configs/exp_d_best.toml
-
-# 对所有 segment 配置依次检查
-python tools/data_integrity_check.py --config configs/real_sw2000.toml
-python tools/data_integrity_check.py --config configs/real_sw2014.toml
-```
-
----
-
-## 六、阶段 J：收益稳定性增强措施（P2，第 4~5 周）
-
-### J.1 跨行业大类资产轮动（防御板块强化）
-
-**问题**：当前模型的行业全集包含高波动行业（计算机、国防、新能源）和低波动行业（银行、食品）。
-在熊市中，即使选了「相对最强」的行业，也可能因整体下跌而亏损。
-
-**解决方案**：引入「防御性大类」标签，在 risk-off 状态下，将仓位限制在防御类。
-
-```python
-DEFENSIVE_INDUSTRIES = {
-    # SW2021 体系下
-    "银行", "公用事业", "交通运输", "食品饮料",
-    "农林牧渔",  # 部分年份防御性强
-}
-
-CYCLICAL_INDUSTRIES = {
-    "计算机", "电子", "国防军工", "有色金属",
-    "电力设备", "汽车",
-}
-
-def filter_by_regime(
-    scores: dict[str, float],
-    regime: str,
-    defensive_cap: float = 0.8,  # risk-off 时防御类行业权重上限
-) -> dict[str, float]:
-    if regime != "bear":
-        return scores
-    # 在熊市状态下，对周期性行业降权 50%
-    return {
-        asset: score * (0.5 if asset in CYCLICAL_INDUSTRIES else 1.0)
-        for asset, score in scores.items()
-    }
-```
-
-### J.2 相对收益目标模式（Benchmark-Relative Mode）
-
-当绝对收益目标（年化 15%）难以实现时，退而求其次：相对基准超额 5% 即可接受。
-
-这意味着在熊市中（基准 -20%），策略的目标是 -15%（超额 5%），而非强求正收益。
-这是更现实的目标设定，避免为了强求正收益而过度择时。
-
-**实现**：`strategy.mode = "absolute" | "relative"` 控制年度预算触发逻辑。
-
-### J.3 分散化再保险：多策略聚合
-
-如果单策略难以做到每年稳定，考虑运行 2~3 个相关性低的策略组合：
-
-| 策略 | 优势 | 劣势 |
-|------|------|------|
-| 候选 H1（防御） | 稳定 | 牛市跑输 |
-| 候选 H2（均衡） | 平衡 | 无明显优势 |
-| H1 × 60% + H2 × 40% | 更稳定 | 实施复杂 |
-
-**行动项**：在单策略满足稳定性要求后再考虑组合，不要用「组合」掩盖单策略的缺陷。
-
----
-
-## 七、Phase D 股票层：数据质量确认后的重启计划
-
-### 7.1 当前 Phase D 结论的有效性评估
-
-`exp_d_best` 结果（Sharpe 0.651，年化 10.82%）的限制已通过无偏重跑（2026-06-07）得到量化确认：
-
-1. **仅覆盖 sw2021 段（2021-2026）**：样本期太短，约 5 年，WF 折数不足
-2. **前视偏差已确认并量化**：使用当前成分股 → survivorship bias 贡献 ~13.7pp 年化退化
-3. **无偏版本完全失效**：Sharpe -0.013，月胜率 27.3%，最大回撤 -49.39%，换手率 0.95
-
-**2026-06-07 无偏重跑结论**：详见 §0.0.5。Phase D 股票层策略在消除前视偏差后 Sharpe < 0，**正式排除，不进入任何生产候选**。
-
-### 7.2 Phase D 排除
-
-**条件 1**（SW2021 段历史快照）：✅ 已完成。stock_close/stock_amount 已重抓，breadth 已本地重算。
-
-**条件 2**（行业层年化 > 12% 且稳定）：❌ 未满足。
-
-**无偏重跑结果**：年化 -2.87%, Sharpe -0.013。策略在无偏数据上完全失效。
-
-**决策**：Phase D 正式排除。即使补齐 sw2000/sw2014 成分股后也不推进全段无偏 WF，SW2021 段已充分证明该策略无效。
-
-### 7.3 Phase D 无偏重跑（已完成）
-
-所有步骤已于 2026-06-07 执行完毕：
-
-1. ✅ 用 `--constituent-snapshots` 重抓 `stock_close.csv` / `stock_amount.csv`（2026-06-06 完成）
-2. ✅ 用本地数据重算 `industry_breadth*.csv`（2026-06-07 完成，AKShare API 不可用）
-3. ✅ 运行 `python -m quant_rotation run --config configs/exp_d_best.toml`（2026-06-07 完成）
-4. ✅ 对比有偏 vs 无偏差异：前视偏差 ~13.7pp 年化退化（详见 §0.0.5）
-
----
-
-## 八、代码架构变更清单（v2）
-
-### 8.1 `backtest.py` 新增
-
-```
-新增函数：
-  + _annual_budget_exposure_adjustment(equity, index, dates, config) -> float
-    年度预算控制：当年已超目标时收缩仓位
-  + vol_target_exposure(benchmark_closes, index, config) -> float
-    波动率目标：根据近期波动动态调整仓位
-  + _select_defensive_holdings(factor_snapshot, top_k) -> dict
-    防御仓位选择：低波动行业底仓
-
-修改函数：
-  ~ run_backtest:
-    - 集成 annual_budget_control 逻辑（在计算 exposure 后追加收缩因子）
-    - 集成 vol_targeting 逻辑（替代或叠加 state_aware_exposure）
-    - 集成 defensive_mode 逻辑（exposure < 0.5 时切换防御选股）
-```
-
-### 8.2 `models.py` 新增字段
-
-```python
-@dataclass(frozen=True)
-class StrategyConfig:
-    # 新增字段（不破坏现有接口）
-    annual_budget_control: bool = False
-    annual_budget_target: float = 0.12
-    annual_budget_lock_trigger: float = 0.10
-    annual_budget_min_exposure: float = 0.50
-    vol_targeting: bool = False
-    vol_target_level: float = 0.15
-    vol_target_window: int = 20
-    vol_target_min_exposure: float = 0.30
-    defensive_mode: bool = False
-    defensive_top_k: int = 3
-    defensive_exposure_threshold: float = 0.50
-```
-
-### 8.3 `config.py` 新增解析
-
-```python
-# 在 load_config 中新增：
-strategy_kwargs["annual_budget_control"] = strategy_section.get("annual_budget_control", False)
-strategy_kwargs["annual_budget_lock_trigger"] = strategy_section.get("annual_budget_lock_trigger", 0.10)
-strategy_kwargs["vol_targeting"] = strategy_section.get("vol_targeting", False)
-strategy_kwargs["vol_target_level"] = strategy_section.get("vol_target_level", 0.15)
-strategy_kwargs["defensive_mode"] = strategy_section.get("defensive_mode", False)
-```
-
-### 8.4 新配置文件
-
-```
-configs/candidate_h1_defensive.toml    # 防御型候选（新建）
-configs/candidate_h2_balanced.toml     # 均衡型候选（新建）
-configs/candidate_h3_aggressive.toml   # 进取型候选（新建）
-configs/narrow_top3_hard.toml          # 窄候选：top3 hard mode（新建）
-configs/narrow_top3_sw2014.toml        # 窄候选：sw2014 segment（新建）
-configs/narrow_top3_sw2000.toml        # 窄候选：sw2000 segment（新建）
-configs/narrow_soft30_softmax.toml     # 窄候选：soft30 + softmax（新建）
-configs/exp_d_lite.toml                # Phase D 简化版（低前视偏差）（新建）
-configs/production_v2.toml             # 暂缓：需 Layer 3 达标后再创建
-```
-
-### 8.5 新工具脚本
-
-```
-tools/data_integrity_check.py          # 数据质量检查（新建）
-tools/annual_returns_summary.py        # 年度收益快速汇总（已增强：多文件对比、分段统计）
-tools/wf_segment_diagnosis.py          # WF 分段诊断：按 segment 统计、失败折定位（新建）
-tools/diagnose_risk_control.py         # 风控准确性诊断（已实现）
-tools/combine_strategies.py            # 多策略聚合（已实现）
-tools/factor_independence.py           # 因子相关性分析（已实现）
-```
-
----
-
-## 九、验证框架修订
-
-### 9.1 新的核心验证指标（替代旧的 Sharpe 中位数）
-
-旧的验证以「WF OOS Sharpe 中位数」为核心，但这个指标对「短期剧烈亏损再恢复」
-的情形不敏感（每折 Sharpe 波动极大）。
-
-新的核心指标：
-
-| 指标 | 旧目标 | 新目标 | 理由 |
-|------|--------|--------|------|
-| WF OOS 盈利折数 | > 19/27 | **> 19/27** | 不变 |
-| 年度负收益年份数 | — | **≤ 1/6** | 直接衡量「每年稳定」 |
-| 最差单年收益 | — | **≥ -10%** | 最差情况可接受 |
-| 年度收益中位数 | — | **≥ 10%** | 长期平均水平 |
-| WF OOS Sharpe 中位数 | > 0.90 | **> 0.35** | 降低目标，更现实 |
-| 月胜率 | > 52% | **> 43%** | 软目标，底仓机制改善 |
-
-### 9.2 分年验证协议
-
-每个候选配置的验收必须通过分年检查：
-
-```bash
-# 单文件年度一致性检查
-python tools/annual_returns_summary.py reports/candidate_h2_balanced/annual_returns.csv
-
-# 多文件并排对比（推荐：快速定位哪个候选在哪些年份有问题）
-python tools/annual_returns_summary.py \
-    --compare \
-    reports/real_sw2021/annual_returns.csv \
-    reports/exp_d_best/annual_returns.csv \
-    reports/exp_d_lite/annual_returns.csv \
-    --segments
-
-# WF 分段诊断（检查每个 segment 的盈利折数和失败 fold 原因）
-python tools/wf_segment_diagnosis.py reports/exp_full27_best_fixed --all
-python tools/wf_segment_diagnosis.py reports/exp_narrow_candidates --all
-```
-
-### 9.3 三层验证流程（修订版）
-
-**Layer 1（1 天）**：sw2021 单段运行 + 分年验证
-- 通过：年度负收益 ≤ 1，最差年 ≥ -10%
-- 命令：`python -m quant_rotation run --config configs/<candidate>.toml && python tools/annual_returns_summary.py reports/<candidate>/annual_returns.csv --segments`
-
-**Layer 2（2 天）**：跨段 WF（sw2014 + sw2021 联合）
-- 通过：OOS 盈利折数 ≥ 15/27，OOS Sharpe 中位数 ≥ 0.15
-- 命令：`python -m quant_rotation validate-segments --configs configs/real_sw2014.toml configs/real_sw2021.toml --industry-only --factor-set ret60_ret5 --top-k 3,5 --risk-off-exposure 0 --risk-control true --market-score-control false --output-dir reports/wf_narrow_layer2 && python tools/wf_segment_diagnosis.py reports/wf_narrow_layer2 --all`
-
-**Layer 3（2 天）**：sw2000 + sw2014 + sw2021 全段 WF
-- 通过：OOS 盈利折数 ≥ 19/27，Bootstrap p_positive ≥ 92%
-- 命令：`python -m quant_rotation validate-segments --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml --industry-only --factor-set ret60_ret5 --top-k 3,5 --risk-off-exposure 0 --risk-control true --market-score-control false --output-dir reports/wf_narrow_layer3 && python tools/wf_segment_diagnosis.py reports/wf_narrow_layer3 --all`
-
----
-
-## 十、优先级矩阵与执行计划
-
-### 10.1 优先级总览（v2）
-
-| 优先级 | 阶段 | 任务 | 预期效果 | 状态 |
-|--------|------|------|---------|------|
-| 🔴 P0 | F.2 | 软仓位 + 底仓 30% | 消除「全空仓」年份 | ✅ 代码+测试完成，实验结论：未超基线 |
-| 🔴 P0 | G.1 | 年度预算控制 | 稳定年度收益上下界 | ✅ 代码+测试完成，实验结论：当前不触发 |\n| 🔴 P0 | G.2 | 波动率目标仓位 | 自动化仓位管理 | ✅ 实验完成，**已排除**：vol 0.12~0.18 全部 DD -35~-37%，年化 ~0% |
-| 🔴 P0 | H.2 | 精简候选 + 固定选择 | 消除 WF 过拟合 | ✅ 3 个候选配置已创建 |
-| 🟠 P1 | G.2 | 波动率目标仓位 | 自动化仓位管理 | ✅ 代码完成，H2 测试中导致大幅回撤 |
-| 🟠 P1 | H.3 | WF 验证（跨段 + 单段） | 确认 OOS 鲁棒性 | ✅ 单段 H1/H2/H3 WF 完成（H2 14.93% 最强）；Layer 2 跨段 WF mean test 6.48% |
-| 🟠 P1 | I.2 | Prosperity 数据质量确认 | 消除潜在偏差 | ✅ 宽表质量通过 + `industry_prosperity_manifest.json` 已写（含 release_lag_days / available_time）；生产权重仍建议 0（待实盘可用性确认） |
-| 🟠 P1 | I.2 | 历史成分股快照 | 修复 Phase D 前视偏差 | ✅ SW2021 段：stock/breadth 已重抓重算，Phase D 无偏重跑完成（年化 -2.87%，策略失效）。sw2000/sw2014 段仍需 JoinQuant/Tushare/vendor 补齐（仅影响行业层数据质量，不影响 Phase D 结论） |
-| 🟡 P2 | J.1 | 防御板块过滤 | 降低熊市损失 | ✅ 完成 |
-| 🟡 P2 | J.2 | 相对收益模式 | 熊市中更现实的目标 | ✅ 完成 |
-| 🟡 P2 | J.3 | 多策略聚合 | 更稳定的组合收益 | ✅ 完成并实测：H1(60%)+H2(40%) 年化 2.02%，被 H2 拖累 |
-| 🟢 P3 | L2 WF | Layer 2 跨段验证（sw2014+sw2021） | 19 折 WF，验证候选跨段鲁棒性 | ✅ 完成：mean test 年化 6.48%, mean DD -9.10%, 7/19 折选 `ret60_ret5_top5_riskoff0_hard` |
-| ❌ | D重启 | Phase D 无偏差版本 | +Sharpe 0.10~0.20 | ❌ **已排除**：无偏重跑 Sharpe -0.013，策略在消除前视偏差后完全失效 |
-
-### 10.2 执行顺序（最快看到效果的路径）
-
-#### 第 1 周：仓位重构（可立即运行，无需新数据）
-
-```
-Day 1：
-  - 修改 backtest.py 集成 _annual_budget_exposure_adjustment
-  - 修改 models.py + config.py 新增字段
-  - 写测试：test_annual_budget_control_reduces_exposure
-
-Day 2：
-  - 实现 vol_target_exposure
-  - 写配置 candidate_h1_defensive.toml、candidate_h2_balanced.toml
-  - 在 sw2021 单段跑两个候选，查看分年收益
-
-Day 3~4：
-  - 实验 F2-EXP1（软仓位扫描）
-  - 对比分年收益：原始 vs 软仓位 30% vs 软仓位 40%
-  - 选定最优软仓位参数
-
-Day 5：
-  - 跑 sw2021 完整段的 3 个候选
-  - 分析每个候选的分年收益表格
-  - 选出初步候选
-```
-
-#### 第 2 周：验证与稳定化
-
-```
-Day 6~7：
-  - Layer 2 WF 验证（sw2014 + sw2021）对初步候选
-  - 重点看每折 OOS 的年化收益分布，而非 Sharpe 均值
-
-Day 8：
-  - 数据质量调研（Prosperity 来源、历史成分股 — ✅ 已通过 SWS 补齐 SW2021 段）
-  - 写 tools/data_integrity_check.py
-
-Day 9~10：
-  - Layer 3 全段 WF 验证
-  - 若 Layer 3 达标，再准备生产配置 production_v2.toml；当前 27 折盈利折数未达标，暂缓
-```
-
-#### 第 3~4 周：Phase D 无偏版本
-
-```
-Week 3：
-  - 用 --constituent-snapshots 重抓 SW2021 段 stock/breadth 数据
-  - 重跑 Phase D 无偏版本（configs/exp_d_best.toml），对比前视偏差影响
-
-Week 4：
-  - sw2000/sw2014 历史成分股补齐（JoinQuant/Tushare/vendor）
-  - Phase D 全段无偏 WF 验证
-```
-
----
-
-## 十一、成功里程碑与验收标准
-
-### Milestone 1（第 1 周末）：年度稳定化初步验证
-
-**通过条件（sw2021 分年）**：
-- 2021 年策略收益 > +1%（非 0%）→ ❌ **仍是 0%（数据起始 2021-12-13，预热 120 天导致 2021 全年无交易）**
-- 2022 年策略收益 > -8% → ✅ 生产基线 0%、H1 防御型 -1.2%
-- 2023 年策略收益 > -2% → ❌ 生产基线 -4.6%、H1 防御型 -2.2%
-- 全段 Sharpe ≥ 0.50 → ✅ 生产基线 0.52
-
-**状态：❌ 未通过**（2023 未达标，软仓位未能改善）
-
-### Milestone 2（第 2 周末）：WF 稳健性确认
-
-**通过条件**：
-- 27 折 WF OOS 盈利折数 ≥ 19/27 → ❌ **第三轮 Layer 2: 8/19（42%）盈利折**
-- OOS 年化收益中位数 ≥ 3% → ❌ **Layer 2 中位数 0.00%（均值 6.48% 被 Fold 7/8/9/19 极端值拉高）**
-- Bootstrap p_positive ≥ 92% → — 未重算，固定候选 OOS 净值 1.68 vs 基准 1.50
-- 候选在全段中无负收益年份超过 2 年 → H1 为 2/6 负收益，最接近达标
-
-**Layer 2 逐折详情**（19 折，sw2014+sw2021）：
-- 盈利折：Fold 2(+17.3%), 7(+43.5%), 8(+33.1%), 9(+32.5%), 11(+3.5%), 14(+10.6%), 18(+3.8%), 19(+77.5%) — 共 8 折
-- 零收益：Fold 12, 15 — 共 2 折
-- 亏损折：Fold 1(-8.4%), 3(-3.1%), 4(-11.0%), 5(-18.1%), 6(-6.0%), 10(-16.2%), 13(-10.4%), 16(-15.4%), 17(-10.1%) — 共 9 折
-
-**状态：❌ 未通过**（盈利折数 < 15/19，中位数 0%。均值 6.48% 来自极端压缩——少数大赚折掩盖多数亏损折。Layer 3 不推进。）
-
-### Milestone 3（第 4 周末）：生产就绪
-
-**通过条件**：全部未满足
-- sw2021 年化 ≥ 12% → ❌ 实际 6.51%
-- sw2021 最差单年 ≥ -8% → ❌ 实际 -4.6%（负值但绝对值达标；目标是正数即 >-8%）✅
-- sw2021 负收益年份 ≤ 1 → ✅
-- sw2021 Sharpe ≥ 0.55 → ❌ 实际 0.52
-- 27 折 WF OOS 盈利折数 ≥ 19/27 → ❌ 实际 13/27
-- Bootstrap p_positive ≥ 92% → ✅ 固定候选补跑为 94.93%
-
-**状态：❌ 未通过**
-
-### Milestone 4（第 6~8 周，条件满足后）：Phase D 增强
-
-**状态：🔒 锁定（前置条件不满足）**
-
----
-
-## 十二、性能基线更新
-
-| 指标 | 旧 plan 基线 | 本次实验（第三轮） | 新目标 |
-|------|------------|-------------------|--------|
-| sw2021 年化（基线） | 6.51% | **6.51%**（仍最优）| ≥ 12% |
-| sw2021 年化（H2 固定） | — | **-1.48%**（vol_target 灾难）| — |
-| sw2021 年化（H2 WF 动态） | — | **14.93%**（mean test，仅 4 折）| — |
-| sw2021 Sharpe | 0.52 | **0.52**（基线）/ 0.37（H1）/ -0.02（H2）| ≥ 0.55 |
-| sw2021 最大回撤 | -17.3% | **-17.3%**（基线）/ -40.7%（H2 fix）/ -13.06%（H2 WF）| < -18% |
-| 负收益年份数 | 1/6 | **H1=2, H2=2, H3=3**（固定配置分年）| ≤ 1/6 |
-| 最差单年 | -4.6% | H1 **-2.2%** / H2 **-13.2%** / H3 **-2.3%** | ≥ -8% |
-| H1 WF mean test 年化 | — | **7.89%**（4 折）| — |
-| H2 WF mean test 年化 | — | **14.93%**（4 折，最强）| — |
-| **Layer 2 WF mean test 年化** | 0.0%（上轮） | **6.48%**（19 折） | ≥ 3% |
-| Layer 2 WF mean test DD | — | **-9.10%** | — |
-| Layer 2 最优固定候选 | — | `ret60_ret5_top5_riskoff0_modeh_riskctrl1_mscore0`（7/19 折）| — |
-| Vol targeting 结论 | — | **已排除**：vol 0.12~0.18 DD -35~-37% | — |
-| 风控 hit_rate | — | 四段全部 **<50%**（22~38%）| — |
-
----
-
-## 十三、关键风险与注意事项
-
-### 风险 1：Phase E 最优仍是 `ret60_ret5`，Phase A-D 的改进未能在 WF 中体现
-
-**原因**：`rel_ret60` 依赖 `market_close.csv`，在 sw2000/sw2014 早期折中数据缺失，
-因子退化，导致这类候选在早期折几乎不被选中，而在晚期折性能又参差不齐。
-
-**缓解**：
-1. 在生产候选中，同时准备一个不依赖 `market_close` 的 H1 版本
-2. 只在 sw2021 段（市场数据完整）重点验证 `rel_ret60`
-
-### 风险 2：软仓位 30% 在极端熊市中损失较大
-
-2022 年全空的策略年化 0%，改为 30% 底仓后 2022 年可能亏损约 6%（基准 -21.6% × 30%）。
-
-**缓解**：
-- 30% 底仓配置在低波动防御行业（银行/公用事业），实际亏损可能只有 3~4%
-- 与此同时，2021 年从 0% 提升到约 2~4%，补偿了部分损失
-- 长期看，「规避」的成功仅在 2022 年，而「踏空」的损失在 2021、2024 均有，
-  软仓位的总效果是正的
-
-### 风险 3：年度预算控制在连续上涨年份（如 2025 连续上涨）会大幅降低收益
-
-如果 2025 年 Q1 就赚了 10%，剩余 9 个月将以 50% 仓位运行，错过大量涨幅。
-
-**缓解**：
-- 将 `lock_trigger` 设为 15%（而非 10%），更宽松的触发条件
-- 或者只在连续亏损后的年份启用年度预算控制（自适应模式）
-
-### 风险 4：WF 框架的有效历史太短（27 折中，sw2000 仅 ~10 折）
-
-当前 WF 的 sw2000 段质量差（无 `market_close`，行业数量少），导致早期折的 OOS 
-结论可靠性低。不应以 sw2000 的 WF 结果作为拒绝候选的依据。
-
-**缓解**：分段统计盈利折数：sw2014 段（约 11 折）和 sw2021 段（约 8 折）分别统计，
-只有两段都 > 60% 盈利折才算通过。
-
----
-
-## 十四、快速检查清单
-
-在每次重大改动后，运行以下快速验证流程：
-
-```bash
-# 步骤 1: 单段快速验证（5 分钟）
-python -m quant_rotation run --config configs/<new_config>.toml
-
-# 步骤 2: 分年一致性检查 + 分段统计
-python tools/annual_returns_summary.py reports/<dir>/annual_returns.csv --segments
-
-# 步骤 3: 跨段固定候选扫参（30 分钟）
-python -m quant_rotation sweep-segments \
+    --purged-gap 20 \
+    --output-dir reports/quick_wf_<name>
+python tools/wf_segment_diagnosis.py reports/quick_wf_<name> --all
+
+# 步骤 6（里程碑验证时）：27 折全段 WF
+python -m quant_rotation validate-segments \
     --configs configs/real_sw2000.toml configs/real_sw2014.toml configs/real_sw2021.toml \
     --industry-only \
-    --factor-set ret60_ret5 \
-    --top-k 3,5 \
-    --risk-off-exposure 0,0.3 \
-    --risk-control true \
-    --market-score-control false,true \
-    --risk-control-mode hard \
-    --top-n-equity 5 \
-    --output-dir reports/quick_sweep_<name>
-
-# 步骤 4: WF 分段诊断（如果跑了 validate-segments）
-python tools/wf_segment_diagnosis.py reports/<wf_dir> --all
-
-# 步骤 5: 数据质量检查
-python tools/data_integrity_check.py --config configs/<new_config>.toml
-
-# 步骤 6: 风控准确性诊断
-python tools/diagnose_risk_control.py
-
-# 步骤 7: 全量回归测试
-python -m pytest --tb=short -q
+    --purged-gap 20 \
+    --output-dir reports/final_wf_<name>
 ```
 
 ---
 
-## 十五、附录：实验结果速查表
+## 附录 A：历史实验结论速查（v2 结果保留参考）
 
-### A. 历史最优 WF 固定候选（27 折 OOS 最终净值排名，2012~2026）
+| 实验 | 结论 | 状态 |
+|------|------|------|
+| F：软仓位扫描 | 最优 softoff0p2 年化 7.29%，未超硬模式基线 6.51% | ✅ 已测试 |
+| G：vol_targeting | vol 0.12~0.18 全部 DD -35~-37%，年化 ~0% | ❌ 已排除 |
+| G：年度预算控制 | 当前收益水平下从未触发，意义有限 | 暂搁置 |
+| H：精简候选 WF | H2 WF 14.93% 最强但固定配置 -1.48%，过拟合 | ✅ 已测试 |
+| I：历史成分股 | SW2021 段已补齐 173 快照 / 5246 只股票 | ✅ 已完成 |
+| J：Phase D 无偏 | 无偏年化 -2.87%, Sharpe -0.013 | ❌ 正式排除 |
+| Layer 2 WF（19 折）| 盈利折 8/19，中位数 0%，均值 6.48% 由极端折贡献 | ❌ 未达标 |
+| 27 折全段 WF | 盈利折 13/27，中位数 0%，固定 top3 OOS 净值 1.95 | ❌ 未达标 |
+| 风控 hit rate | 四段全部 22~38%，market_score 误报率 62% | ❌ 需根本改造 |
 
-| 排名 | 候选名 | OOS 净值 | 超额（vs 基准）|
-|------|--------|---------|--------------|
-| 1 | `ret60_top3_riskoff0p3_pmsoftmax` | 2.09 | +20.8% |
-| 2 | `ret60_top3_riskoff0p3_pmequal` | 2.04 | +17.7% |
-| 3 | `ret60_top3_riskoff0p2_pmsoftmax` | 1.99 | +14.9% |
-| 10 | `ret60_top3_riskoff0_pmequal` | 1.78 | +2.7% |
+---
 
-### B. Phase D 最优 sw2021 回测
-
-| 指标 | 值 |
-|------|---|
-| 年化 | 10.82% |
-| Sharpe | 0.651 |
-| 最大回撤 | -22.17% |
-| 月胜率 | 34.5% |
-| 换手率 | 0.85 |
-| 注意 | 使用静态成分股，存在前视偏差 |
-
-### C. sw2021 分年收益（不同配置对比，含本次新增）
-
-| 年份 | 基准 | 等权 | 当前最优（production） | Phase D best | Phase D lite | 目标范围 |
-|------|------|------|---------------------|-------------|-------------|---------|
-| 2021 | -2.8% | +0.3% | 0.0%（空仓） | 0.0% | 0.0% | **+1~5%** |
-| 2022 | -21.6% | -15.1% | 0.0%（空仓） | 0.0% | 0.0% | **-5~0%** |
-| 2023 | -11.4% | -6.9% | -4.6% | -1.3% | +1.6% | **-2~+5%** |
-| 2024 | +14.7% | +14.0% | +8.6% | +14.9% | +6.6% | **+8~18%** |
-| 2025 | +17.7% | +28.4% | +18.6% | +2.3% | +7.7% | **+10~25%** |
-| 2026H1 | +6.1% | +1.7% | +6.5% | +33.5% | +2.5% | **+4~15%** |
-
-**Phase D lite 结论**：简化为仅流动性过滤（top10 stocks/industry, equal-weight）后年化仅 3.0%，远弱于 exp_d_best (10.82%)，确认股票 Alpha 因子（vol20、consistency20）是关键超额来源而非单纯的分散化；但同时确认前视偏差风险仍在，不应直接用于生产。
-
-### D. 收窄候选跨段扫参（exp_narrow_candidates，本次新增）
-
-仅 8 个候选 × 3 段（sw2000+sw2014+sw2021），stitched equity：
-
-| 候选名 | 年化 | Sharpe | Max DD |
-|--------|------|--------|--------|
-| `ret60_ret5_top3_riskoff0p3_riskctrl1_mscore0` | 7.20% | 0.48 | -44.17% |
-| `ret60_ret5_top3_riskoff0p3_riskctrl1_mscore1` | 6.62% | 0.48 | -39.40% |
-| `ret60_ret5_top5_riskoff0p3_riskctrl1_mscore1` | 6.14% | 0.45 | -38.57% |
-| `ret60_ret5_top3_riskoff0_riskctrl1_mscore0` | 5.55% | 0.37 | -33.83% |
-
-**结论**：跨全段（2010-2026）的最大回撤均远超可接受范围（>33%），再次确认当前行业层策略在长历史中存在大幅回撤期，不适合作为单一生产策略。
+*文档版本：v3.2 | 更新日期：2026-06-07 | 状态：P0+P1 全部完成，P2 已执行 P.2，M.2/M.3 数据阻塞，M-Final ❌*

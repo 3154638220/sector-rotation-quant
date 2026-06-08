@@ -1,0 +1,66 @@
+# candidate_v3_alpha.toml — Strong Alpha candidate config
+# Built from Phase K/L/N findings. Uses three-state market classifier,
+# signal-strength (softmax) weighting, and industry cluster constraint.
+# Target: Sharpe ≥ 0.70, win rate ≥ 45%, WF OOS median ≥ 3%.
+
+[data]
+industry_close = "../data/real_sw2021/industry_close.csv"
+industry_amount = "../data/real_sw2021/industry_amount.csv"
+industry_prosperity = "../data/real_sw2021/industry_prosperity.csv"
+benchmark_close = "../data/real_sw2021/benchmark_close.csv"
+market_close = "../data/real_sw2021/market_close.csv"
+
+[strategy]
+rebalance_every = 20
+top_k = 5
+max_industry_weight = 0.28
+transaction_cost = 0.001
+
+# Enable risk control using three-state classifier (replaces binary)
+risk_control = true
+market_state_mode = "three_state"
+three_state_strong_exposure = 1.00
+three_state_neutral_exposure = 0.60
+three_state_weak_exposure = 0.25
+three_state_trend_weight = 0.35
+three_state_dispersion_weight = 0.25
+three_state_momentum_weight = 0.25
+three_state_breadth_weight = 0.15
+three_state_strong_threshold = 0.25
+three_state_weak_threshold = -0.10
+
+# Signal strength weighting
+portfolio_mode = "softmax"
+softmax_temperature = 0.5
+
+# Industry cluster constraint
+cluster_constraint = true
+max_per_cluster = 2
+
+[factors]
+# Primary momentum factor (ICIR ~0.14 on SW2014, negative on SW2021)
+ret60_weight = 1.00
+# Trend consistency adds stability (ICIR ~0.22 on SW2014)
+consistency60_weight = 0.25
+# Short-term overheating penalty
+ret5_weight = -0.50
+# Other factors at zero pending IC validation on merged data
+ret20_weight = 0.00
+ret120_weight = 0.00
+rel_ret60_weight = 0.00
+rel_ret20_weight = 0.00
+momentum_accel_weight = 0.00
+amount_strength_weight = 0.00
+breadth20_weight = 0.00
+breadth60_weight = 0.00
+valuation_weight = 0.00
+prosperity_weight = 0.00
+vol20_weight = 0.00
+
+[reports]
+output_dir = "../reports/candidate_v3_alpha"
+
+[market_weights]
+CSI300 = 0.50
+CSIAll = 0.30
+ChiNext = 0.20

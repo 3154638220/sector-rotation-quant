@@ -229,6 +229,72 @@ def resolve_walk_forward_splits(
     return splits
 
 
+def purged_walk_forward_splits(
+    dates: list[date],
+    train_window: int,
+    test_window: int,
+    gap: int = 20,
+    step: int | None = None,
+    include_partial_fold: bool = False,
+) -> list[TrainTestSplit]:
+    """Generate walk-forward splits with a purge gap between train and test.
+
+    The gap prevents information leakage from the most recent training
+    observations into the test period (e.g. positions held on the last
+    training day whose returns cross into the test window).
+    """
+    if train_window < 2:
+        raise ValueError("train_window must contain at least two observations")
+    if test_window < 2:
+        raise ValueError("test_window must contain at least two observations")
+    if gap < 0:
+        raise ValueError("gap must be non-negative")
+    step_size = step if step is not None else test_window
+    if step_size <= 0:
+        raise ValueError("step must be positive")
+    if len(dates) < train_window + gap + 2:
+        raise ValueError(
+            f"Purged WF requires at least {train_window + gap + 2} dates"
+        )
+
+    splits: list[TrainTestSplit] = []
+    train_start_index = 0
+    while True:
+        train_end_index = train_start_index + train_window - 1
+        test_start_index = train_end_index + gap + 1
+        if test_start_index > len(dates) - 2:
+            break
+
+        test_end_index = test_start_index + test_window - 1
+        if test_end_index >= len(dates):
+            if not include_partial_fold:
+                break
+            test_end_index = len(dates) - 1
+            if test_end_index - test_start_index < 1:
+                break
+
+        splits.append(
+            TrainTestSplit(
+                train_start=dates[train_start_index],
+                train_end=dates[train_end_index],
+                test_start=dates[test_start_index],
+                test_end=dates[test_end_index],
+                train_start_index=train_start_index,
+                train_end_index=train_end_index,
+                test_start_index=test_start_index,
+                test_end_index=test_end_index,
+            )
+        )
+        train_start_index += step_size
+
+    if not splits:
+        raise ValueError(
+            "No purged walk-forward folds could be generated. "
+            "Try smaller train/test windows, a smaller gap, or enable partial folds."
+        )
+    return splits
+
+
 def _normalize(values: list[float]) -> list[float]:
     start = values[0]
     if start <= 0:
@@ -503,14 +569,25 @@ def run_walk_forward_validation(
     test_window: int = 126,
     step: int | None = None,
     include_partial_fold: bool = False,
+    purged_gap: int = 0,
 ) -> list[WalkForwardValidationFold]:
-    splits = resolve_walk_forward_splits(
-        data.dates,
-        train_window=train_window,
-        test_window=test_window,
-        step=step,
-        include_partial_fold=include_partial_fold,
-    )
+    if purged_gap > 0:
+        splits = purged_walk_forward_splits(
+            data.dates,
+            train_window=train_window,
+            test_window=test_window,
+            gap=purged_gap,
+            step=step,
+            include_partial_fold=include_partial_fold,
+        )
+    else:
+        splits = resolve_walk_forward_splits(
+            data.dates,
+            train_window=train_window,
+            test_window=test_window,
+            step=step,
+            include_partial_fold=include_partial_fold,
+        )
     sweep_runs = run_parameter_sweep(
         data,
         benchmark_closes,

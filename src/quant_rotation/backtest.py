@@ -13,7 +13,20 @@ from .models import (
     StockIndustryMap,
     StrategyConfig,
 )
-from .portfolio import adaptive_top_k, equal_weight_target, softmax_weight_target, turnover, vol_parity_target
+from .portfolio import (
+    INDUSTRY_CLUSTER_SW2000,
+    INDUSTRY_CLUSTER_SW2014,
+    INDUSTRY_CLUSTER_SW2021,
+    adaptive_top_k,
+    equal_weight_target,
+    rank_weight_target,
+    select_with_cluster_constraint,
+    shrink_toward_current,
+    softmax_weight_target,
+    top_k_from_dispersion,
+    turnover,
+    vol_parity_target,
+)
 from .stock_selection import stock_target_weights
 
 DEFENSIVE_INDUSTRIES: set[str] = {
@@ -445,9 +458,15 @@ def run_backtest(
     strategy_equity = [1.0]
     rebalances: list[RebalanceEvent] = []
     daily_returns = [0.0]
+
+    staggered_step = (
+        config.rebalance_every // config.staggered_n_tranches
+        if config.staggered_rebalance and config.staggered_n_tranches > 1
+        else config.rebalance_every
+    )
     rebalance_by_execution_index = {
         signal_index + 1: signal_index
-        for signal_index in range(min_history, len(data.dates) - 1, config.rebalance_every)
+        for signal_index in range(min_history, len(data.dates) - 1, staggered_step)
     }
     benchmark_equity = _benchmark_equity(benchmark_closes)
 
@@ -519,8 +538,58 @@ def run_backtest(
                     base_k=config.adaptive_top_k_base,
                     concentration_threshold=config.adaptive_top_k_concentration,
                 )
+            if config.dynamic_top_k:
+                comp_returns: list[float] = []
+                for asset, closes in data.closes.items():
+                    if signal_index >= 20 and closes[signal_index - 20] > 0:
+                        comp_returns.append(closes[signal_index] / closes[signal_index - 20] - 1.0)
+                if len(comp_returns) > 2:
+                    mean_r = sum(comp_returns) / len(comp_returns)
+                    variance = sum((r - mean_r) ** 2 for r in comp_returns) / len(comp_returns)
+                    dispersion = variance ** 0.5
+                    dispersion_top_k = top_k_from_dispersion(
+                        dispersion,
+                        k_min=config.dynamic_top_k_min,
+                        k_max=config.dynamic_top_k_max,
+                        disp_low=config.dynamic_top_k_disp_low,
+                        disp_high=config.dynamic_top_k_disp_high,
+                    )
+                    effective_top_k = min(effective_top_k, dispersion_top_k)
 
             if (
+                config.market_state_mode == "three_state"
+                and benchmark_closes is not None
+            ):
+                from .regime import MarketStateConfig, classify_market_state as classify_three_state
+
+                industry_returns_20d: dict[str, float] = {}
+                for asset, closes in data.closes.items():
+                    if signal_index >= 20:
+                        industry_returns_20d[asset] = closes[signal_index] / closes[signal_index - 20] - 1.0
+
+                breadth20_vals: dict[str, float] | None = None
+                if snapshot.fields.get("breadth20"):
+                    breadth20_vals = dict(snapshot.fields["breadth20"])
+
+                regime_config = MarketStateConfig(
+                    trend_weight=config.three_state_trend_weight,
+                    dispersion_weight=config.three_state_dispersion_weight,
+                    momentum_weight=config.three_state_momentum_weight,
+                    breadth_weight=config.three_state_breadth_weight,
+                    strong_threshold=config.three_state_strong_threshold,
+                    weak_threshold=config.three_state_weak_threshold,
+                    strong_exposure=config.three_state_strong_exposure,
+                    neutral_exposure=config.three_state_neutral_exposure,
+                    weak_exposure=config.three_state_weak_exposure,
+                )
+                _state, exposure = classify_three_state(
+                    benchmark_closes,
+                    signal_index,
+                    regime_config,
+                    industry_returns_20d=industry_returns_20d,
+                    breadth_values=breadth20_vals,
+                )
+            elif (
                 config.risk_control_mode == "soft"
                 and config.market_score_control
                 and score is not None
@@ -590,33 +659,54 @@ def run_backtest(
                         snapshot, top_k=config.defensive_top_k,
                     ).items()
                 }
-            elif config.portfolio_mode == "softmax":
-                industry_target_weights = softmax_weight_target(
-                    effective_scores,
-                    top_k=effective_top_k,
-                    exposure=exposure,
-                    max_weight=config.max_industry_weight,
-                    temperature=config.softmax_temperature,
-                )
-            elif config.portfolio_mode == "vol_parity":
-                vol_snapshot = {
-                    asset: trailing_volatility(closes, signal_index, 20)
-                    for asset, closes in data.closes.items()
-                }
-                industry_target_weights = vol_parity_target(
-                    effective_scores,
-                    vol_snapshot,
-                    top_k=effective_top_k,
-                    exposure=exposure,
-                    max_weight=config.max_industry_weight,
-                )
             else:
-                industry_target_weights = equal_weight_target(
-                    effective_scores,
-                    top_k=effective_top_k,
-                    exposure=exposure,
-                    max_weight=config.max_industry_weight,
-                )
+                if config.cluster_constraint:
+                    cluster_holdings = select_with_cluster_constraint(
+                        effective_scores,
+                        top_k=effective_top_k,
+                        max_per_cluster=config.max_per_cluster,
+                    )
+                else:
+                    cluster_holdings = None
+
+                if config.portfolio_mode == "softmax":
+                    industry_target_weights = softmax_weight_target(
+                        effective_scores,
+                        top_k=effective_top_k,
+                        exposure=exposure,
+                        max_weight=config.max_industry_weight,
+                        temperature=config.softmax_temperature,
+                        holdings=cluster_holdings,
+                    )
+                elif config.portfolio_mode == "vol_parity":
+                    vol_snapshot = {
+                        asset: trailing_volatility(closes, signal_index, 20)
+                        for asset, closes in data.closes.items()
+                    }
+                    industry_target_weights = vol_parity_target(
+                        effective_scores,
+                        vol_snapshot,
+                        top_k=effective_top_k,
+                        exposure=exposure,
+                        max_weight=config.max_industry_weight,
+                        holdings=cluster_holdings,
+                    )
+                elif config.portfolio_mode == "rank":
+                    industry_target_weights = rank_weight_target(
+                        effective_scores,
+                        top_k=effective_top_k,
+                        exposure=exposure,
+                        max_weight=config.max_industry_weight,
+                        holdings=cluster_holdings,
+                    )
+                else:
+                    industry_target_weights = equal_weight_target(
+                        effective_scores,
+                        top_k=effective_top_k,
+                        exposure=exposure,
+                        max_weight=config.max_industry_weight,
+                        holdings=cluster_holdings,
+                    )
             target_weights = (
                 stock_target_weights(
                     industry_target_weights,
@@ -631,6 +721,32 @@ def run_backtest(
                 else industry_target_weights
             )
             trade_turnover = turnover(current_weights, target_weights)
+
+            if config.turnover_budget is not None and config.turnover_budget > 0:
+                past_turnovers = [
+                    e.turnover for e in rebalances[-config.turnover_budget_window:]
+                ]
+                cum_turn = sum(past_turnovers) + trade_turnover
+                target_len = max(1, len(past_turnovers) + 1)
+                avg_turn = cum_turn / target_len
+                if avg_turn > config.turnover_budget:
+                    shrink_factor = avg_turn / config.turnover_budget
+                    target_weights = shrink_toward_current(
+                        target_weights, current_weights, 1.0 - 1.0 / shrink_factor,
+                    )
+                    trade_turnover = turnover(current_weights, target_weights)
+
+            if config.staggered_rebalance and config.staggered_n_tranches > 1 and current_weights:
+                alpha = 1.0 / config.staggered_n_tranches
+                blended: dict[str, float] = {}
+                all_assets = set(current_weights) | set(target_weights)
+                for asset in all_assets:
+                    curr = current_weights.get(asset, 0.0)
+                    tgt = target_weights.get(asset, 0.0)
+                    blended[asset] = (1.0 - alpha) * curr + alpha * tgt
+                target_weights = blended
+                trade_turnover = turnover(current_weights, target_weights)
+
             cost = trade_turnover * config.transaction_cost
             next_equity *= 1.0 - cost
             current_weights = target_weights

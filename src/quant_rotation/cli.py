@@ -11,6 +11,8 @@ from .config import load_config
 from .data import (
     align_asset_data,
     align_benchmark,
+    filter_benchmark_by_date_range,
+    filter_price_data_by_date_range,
     load_benchmark_csv,
     load_stock_industry_map_csv,
     load_wide_asset_csv,
@@ -274,6 +276,8 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="Run a backtest")
     run.add_argument("--config", default="configs/default.toml", help="TOML config path")
     run.add_argument("--output-dir", default=None, help="Override report output directory")
+    run.add_argument("--start", default=None, help="Start date (YYYY-MM-DD) for data filtering")
+    run.add_argument("--end", default=None, help="End date (YYYY-MM-DD) for data filtering")
 
     run_segments = subparsers.add_parser(
         "run-segments",
@@ -769,6 +773,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="1.0",
         help="Comma-separated softmax_temperature values, e.g. 0.5,0.75,1.0,1.5,2.0",
     )
+    validate_segments.add_argument(
+        "--purged-gap",
+        type=int,
+        default=0,
+        help="Number of days to purge between train and test windows (0 = no purge)",
+    )
+    validate_segments.add_argument(
+        "--config-override",
+        default=None,
+        help="Path to a TOML config that overrides the base strategy (fixes params, no sweep)",
+    )
 
     plot_cmd = subparsers.add_parser(
         "plot",
@@ -1055,6 +1070,33 @@ def run_command(args: argparse.Namespace) -> int:
         stock_industry_map,
         benchmark_closes,
     ) = _load_inputs(args.config)
+
+    start_date = date.fromisoformat(args.start) if getattr(args, "start", None) else None
+    end_date = date.fromisoformat(args.end) if getattr(args, "end", None) else None
+    if start_date or end_date:
+        orig_dates = list(industry_data.dates)
+        industry_data = filter_price_data_by_date_range(industry_data, start_date, end_date)
+        keep_indices = {i for i, d in enumerate(orig_dates) if d in industry_data.dates}
+        if amount_data is not None:
+            amount_data = filter_price_data_by_date_range(amount_data, start_date, end_date)
+        if breadth_data is not None:
+            breadth_data = BreadthData(
+                breadth20=filter_price_data_by_date_range(breadth_data.breadth20, start_date, end_date) if breadth_data.breadth20 else None,
+                breadth60=filter_price_data_by_date_range(breadth_data.breadth60, start_date, end_date) if breadth_data.breadth60 else None,
+            )
+        if valuation_data is not None:
+            valuation_data = filter_price_data_by_date_range(valuation_data, start_date, end_date)
+        if prosperity_data is not None:
+            prosperity_data = filter_price_data_by_date_range(prosperity_data, start_date, end_date)
+        if market_data is not None:
+            market_data = filter_price_data_by_date_range(market_data, start_date, end_date)
+        if stock_data is not None:
+            stock_data = filter_price_data_by_date_range(stock_data, start_date, end_date)
+            if stock_amount_data is not None:
+                stock_amount_data = filter_price_data_by_date_range(stock_amount_data, start_date, end_date)
+        if benchmark_closes is not None:
+            benchmark_closes = [c for i, c in enumerate(benchmark_closes) if i in keep_indices]
+
     result = run_backtest(
         industry_data,
         benchmark_closes,
@@ -1749,6 +1791,71 @@ def validate_segments_command(args: argparse.Namespace) -> int:
             strategy,
             stock_selection=replace(strategy.stock_selection, enabled=False),
         )
+    if args.config_override:
+        import tomllib as _toml
+        with open(args.config_override, "rb") as _fh:
+            _override_raw = _toml.load(_fh)
+        _override_strategy = _override_raw.get("strategy", {})
+        strategy = replace(
+            strategy,
+            rebalance_every=int(_override_strategy.get("rebalance_every", strategy.rebalance_every)),
+            top_k=int(_override_strategy.get("top_k", strategy.top_k)),
+            max_industry_weight=float(_override_strategy.get("max_industry_weight", strategy.max_industry_weight)),
+            transaction_cost=float(_override_strategy.get("transaction_cost", strategy.transaction_cost)),
+            risk_control=bool(_override_strategy.get("risk_control", strategy.risk_control)),
+            market_ma_window=int(_override_strategy.get("market_ma_window", strategy.market_ma_window)),
+            market_score_control=bool(_override_strategy.get("market_score_control", strategy.market_score_control)),
+            market_score_window=int(_override_strategy.get("market_score_window", strategy.market_score_window)),
+            market_score_threshold=float(_override_strategy.get("market_score_threshold", strategy.market_score_threshold)),
+            risk_off_exposure=float(_override_strategy.get("risk_off_exposure", strategy.risk_off_exposure)),
+            portfolio_mode=str(_override_strategy.get("portfolio_mode", strategy.portfolio_mode)),
+            softmax_temperature=float(_override_strategy.get("softmax_temperature", strategy.softmax_temperature)),
+            cluster_constraint=bool(_override_strategy.get("cluster_constraint", strategy.cluster_constraint)),
+            max_per_cluster=int(_override_strategy.get("max_per_cluster", strategy.max_per_cluster)),
+            market_state_mode=str(_override_strategy.get("market_state_mode", strategy.market_state_mode)),
+            three_state_strong_exposure=float(_override_strategy.get("three_state_strong_exposure", strategy.three_state_strong_exposure)),
+            three_state_neutral_exposure=float(_override_strategy.get("three_state_neutral_exposure", strategy.three_state_neutral_exposure)),
+            three_state_weak_exposure=float(_override_strategy.get("three_state_weak_exposure", strategy.three_state_weak_exposure)),
+            three_state_trend_weight=float(_override_strategy.get("three_state_trend_weight", strategy.three_state_trend_weight)),
+            three_state_dispersion_weight=float(_override_strategy.get("three_state_dispersion_weight", strategy.three_state_dispersion_weight)),
+            three_state_momentum_weight=float(_override_strategy.get("three_state_momentum_weight", strategy.three_state_momentum_weight)),
+            three_state_breadth_weight=float(_override_strategy.get("three_state_breadth_weight", strategy.three_state_breadth_weight)),
+            three_state_strong_threshold=float(_override_strategy.get("three_state_strong_threshold", strategy.three_state_strong_threshold)),
+            three_state_weak_threshold=float(_override_strategy.get("three_state_weak_threshold", strategy.three_state_weak_threshold)),
+            dynamic_top_k=bool(_override_strategy.get("dynamic_top_k", strategy.dynamic_top_k)),
+            dynamic_top_k_min=int(_override_strategy.get("dynamic_top_k_min", strategy.dynamic_top_k_min)),
+            dynamic_top_k_max=int(_override_strategy.get("dynamic_top_k_max", strategy.dynamic_top_k_max)),
+            dynamic_top_k_disp_low=float(_override_strategy.get("dynamic_top_k_disp_low", strategy.dynamic_top_k_disp_low)),
+            dynamic_top_k_disp_high=float(_override_strategy.get("dynamic_top_k_disp_high", strategy.dynamic_top_k_disp_high)),
+            turnover_budget=float(_override_strategy["turnover_budget"]) if "turnover_budget" in _override_strategy else strategy.turnover_budget,
+            turnover_budget_window=int(_override_strategy.get("turnover_budget_window", strategy.turnover_budget_window)),
+            staggered_rebalance=bool(_override_strategy.get("staggered_rebalance", strategy.staggered_rebalance)),
+            staggered_n_tranches=int(_override_strategy.get("staggered_n_tranches", strategy.staggered_n_tranches)),
+        )
+
+        _override_factors = _override_raw.get("factors", {})
+        if _override_factors:
+            _existing = strategy.factor_weights
+            strategy = replace(
+                strategy,
+                factor_weights=replace(
+                    _existing,
+                    ret20=float(_override_factors.get("ret20_weight", _existing.ret20)),
+                    ret60=float(_override_factors.get("ret60_weight", _existing.ret60)),
+                    ret120=float(_override_factors.get("ret120_weight", _existing.ret120)),
+                    ret5=float(_override_factors.get("ret5_weight", _existing.ret5)),
+                    consistency60=float(_override_factors.get("consistency60_weight", _existing.consistency60)),
+                    vol20=float(_override_factors.get("vol20_weight", _existing.vol20)),
+                    amount_strength=float(_override_factors.get("amount_strength_weight", _existing.amount_strength)),
+                    rel_ret60=float(_override_factors.get("rel_ret60_weight", _existing.rel_ret60)),
+                    rel_ret20=float(_override_factors.get("rel_ret20_weight", _existing.rel_ret20)),
+                    momentum_accel=float(_override_factors.get("momentum_accel_weight", _existing.momentum_accel)),
+                    breadth20=float(_override_factors.get("breadth20_weight", _existing.breadth20)),
+                    breadth60=float(_override_factors.get("breadth60_weight", _existing.breadth60)),
+                    valuation=float(_override_factors.get("valuation_weight", _existing.valuation)),
+                    prosperity=float(_override_factors.get("prosperity_weight", _existing.prosperity)),
+                ),
+            )
 
     merged_prices = merge_segment_price_data(segment_price_data, fill_missing=True)
     merged_benchmark = merge_benchmark_closes(segment_benchmark_data)
@@ -1804,6 +1911,7 @@ def validate_segments_command(args: argparse.Namespace) -> int:
         test_window=args.test_window,
         step=args.step,
         include_partial_fold=args.include_partial_fold,
+        purged_gap=args.purged_gap,
     )
 
     write_walk_forward_validation_reports(

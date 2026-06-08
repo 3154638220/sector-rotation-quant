@@ -160,3 +160,41 @@ def align_asset_data(
         for asset in target_assets
     }
     return PriceData(target_dates, aligned)
+
+
+def filter_price_data_by_date_range(
+    data: PriceData,
+    start: date | None = None,
+    end: date | None = None,
+) -> PriceData:
+    if start is None and end is None:
+        return data
+    indices = [
+        i for i, d in enumerate(data.dates)
+        if (start is None or d >= start) and (end is None or d <= end)
+    ]
+    if not indices:
+        raise ValueError("No dates remain after applying date range filter")
+    filtered_dates = [data.dates[i] for i in indices]
+    filtered_closes = {
+        asset: [closes[i] for i in indices]
+        for asset, closes in data.closes.items()
+    }
+    return PriceData(filtered_dates, filtered_closes)
+
+
+def filter_benchmark_by_date_range(
+    dates: list[date],
+    closes: list[float],
+    start: date | None = None,
+    end: date | None = None,
+) -> tuple[list[date], list[float]]:
+    if start is None and end is None:
+        return dates, closes
+    filtered = [
+        (d, c) for d, c in zip(dates, closes)
+        if (start is None or d >= start) and (end is None or d <= end)
+    ]
+    if not filtered:
+        raise ValueError("No dates remain after applying date range filter")
+    return [d for d, _ in filtered], [c for _, c in filtered]
